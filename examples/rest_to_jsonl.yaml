@@ -1,0 +1,20 @@
+# A faucet REST source into a faucet JSONL sink. Each `config:` under
+# `connector:` is the block a faucet YAML would hold for that connector.
+github_issues:
+  input:
+    custom:
+      name: faucet
+      config:
+        connector: rest
+        state_path: ./state
+        config:
+          base_url: https://api.github.com
+          path: /repos/marcomq/mq-bridge/issues
+  output:
+    custom:
+      name: faucet
+      config:
+        connector: jsonl
+        config:
+          path: ./issues.jsonl
+          append: true
