@@ -82,8 +82,8 @@ fn install() {
     });
 }
 
-/// Reads the source to its end in batches of two; `ack` decides each batch's fate.
-async fn drain(state: &std::path::Path, ack: bool) -> Vec<Value> {
+/// Reads the source to its end in batches of two; `ack` decides each batch's fate by its index.
+async fn drain(state: &std::path::Path, ack: impl Fn(usize) -> bool) -> Vec<Value> {
     let mut consumer = FaucetFactory
         .create_consumer(
             "route",
@@ -92,14 +92,14 @@ async fn drain(state: &std::path::Path, ack: bool) -> Vec<Value> {
         .await
         .expect("create the consumer");
     let mut records = Vec::new();
-    loop {
+    for index in 0.. {
         let batch = match consumer.receive_batch(2).await {
             Ok(batch) => batch,
-            Err(ConsumerError::EndOfStream) => return records,
+            Err(ConsumerError::EndOfStream) => break,
             Err(error) => panic!("the source failed: {error}"),
         };
         assert!(batch.messages.len() <= 2);
-        let disposition = if ack {
+        let disposition = if ack(index) {
             MessageDisposition::Ack
         } else {
             MessageDisposition::Nack
@@ -110,6 +110,7 @@ async fn drain(state: &std::path::Path, ack: bool) -> Vec<Value> {
         }
         (batch.commit)(dispositions).await.expect("commit");
     }
+    records
 }
 
 #[tokio::test]
@@ -118,9 +119,19 @@ async fn a_committed_run_resumes_after_its_bookmark_and_a_nacked_one_starts_over
     let state = tempfile::tempdir().expect("a temp dir");
     let all: Vec<Value> = (1..=5).map(|n| json!({"n": n})).collect();
 
-    assert_eq!(drain(state.path(), false).await, all);
-    assert_eq!(drain(state.path(), true).await, all);
-    assert_eq!(drain(state.path(), true).await, Vec::<Value>::new());
+    assert_eq!(drain(state.path(), |_| false).await, all);
+    assert_eq!(drain(state.path(), |_| true).await, all);
+    assert_eq!(drain(state.path(), |_| true).await, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn a_nack_early_in_a_page_keeps_the_bookmark_its_later_batches_carry() {
+    install();
+    let state = tempfile::tempdir().expect("a temp dir");
+    let all: Vec<Value> = (1..=5).map(|n| json!({"n": n})).collect();
+
+    assert_eq!(drain(state.path(), |index| index != 0).await, all);
+    assert_eq!(drain(state.path(), |_| true).await, all);
 }
 
 #[tokio::test]

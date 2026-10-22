@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +23,8 @@ type PageResult = Result<StreamPage, FaucetError>;
 struct Checkpoint {
     store: FileStateStore,
     key: String,
+    /// A bookmark covers every record before it, so after a nack none may be stored this run.
+    nacked: AtomicBool,
 }
 
 struct FaucetConsumer {
@@ -93,7 +96,11 @@ async fn resume(
             .await
             .context("the faucet source rejected its stored bookmark")?;
     }
-    Ok(Checkpoint { store, key })
+    Ok(Checkpoint {
+        store,
+        key,
+        nacked: AtomicBool::new(false),
+    })
 }
 
 fn state_key_from(route_name: &str) -> String {
@@ -179,7 +186,11 @@ impl MessageConsumer for FaucetConsumer {
         let messages = self
             .pending
             .drain(..count)
-            .map(|record| CanonicalMessage::from(record.to_string()))
+            .map(|record| {
+                CanonicalMessage::from(
+                    serde_json::to_vec(&record).expect("a JSON value always serializes"),
+                )
+            })
             .collect();
         let bookmark = if self.pending.is_empty() {
             self.bookmark.take()
@@ -197,17 +208,24 @@ impl MessageConsumer for FaucetConsumer {
     }
 }
 
-/// Stores the page's bookmark, unless a message of the batch was nacked.
+/// Stores the page's bookmark, unless a message of this run was nacked.
+/// Commits run in receive order, so an earlier batch's nack is seen here.
 fn commit(checkpoint: Option<Arc<Checkpoint>>, bookmark: Option<Value>) -> BatchCommitFunc {
     Box::new(move |dispositions| {
         Box::pin(async move {
-            let (Some(checkpoint), Some(bookmark)) = (checkpoint, bookmark) else {
+            let Some(checkpoint) = checkpoint else {
                 return Ok(());
             };
             if dispositions
                 .iter()
                 .any(|d| matches!(d, MessageDisposition::Nack))
             {
+                checkpoint.nacked.store(true, Ordering::Release);
+            }
+            let Some(bookmark) = bookmark else {
+                return Ok(());
+            };
+            if checkpoint.nacked.load(Ordering::Acquire) {
                 return Ok(());
             }
             checkpoint
