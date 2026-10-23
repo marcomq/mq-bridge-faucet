@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
 
@@ -311,25 +311,31 @@ impl FaucetPublisher {
         let mut records = Vec::with_capacity(messages.len());
         let mut parsed = Vec::with_capacity(messages.len());
         for (scope, indexes) in scopes {
-            let mut clears_gap = true;
-            if let Some(&gap) = marks.gaps.get(scope) {
-                let offsets = || indexes.iter().map(|&index| positions[index].offset);
-                // Only a batch that sends the failed position again, or stays below it, may pass.
-                clears_gap = offsets().any(|offset| offset == gap);
-                if !clears_gap && !offsets().all(|offset| offset < gap) {
-                    for &index in indexes {
-                        outcomes[index] = Some(PublisherError::Retryable(anyhow!(
-                            "exactly_once: `{scope}` waits for position {gap}, whose write failed, \
-                             to be sent again"
-                        )));
-                    }
-                    continue;
+            let offsets: Vec<u64> = indexes
+                .iter()
+                .map(|&index| positions[index].offset)
+                .collect();
+            let highest = offsets.iter().copied().max().unwrap_or(0);
+            let gaps = marks.gaps.get(scope);
+            // A batch must send again every failed position up to its highest one.
+            let waits_for =
+                gaps.and_then(|gaps| gaps.range(..=highest).find(|gap| !offsets.contains(gap)));
+            if let Some(gap) = waits_for {
+                for &index in indexes {
+                    outcomes[index] = Some(PublisherError::Retryable(anyhow!(
+                        "exactly_once: `{scope}` waits for position {gap}, whose write failed, \
+                         to be sent again"
+                    )));
                 }
+                continue;
             }
+            let closes = gaps
+                .map(|gaps| gaps.range(..=highest).copied().collect())
+                .unwrap_or_default();
             let done = self.committed_position(&mut marks.committed, scope).await?;
             let mut partition = Partition {
                 scope: scope.clone(),
-                clears_gap,
+                closes,
                 pending: Vec::new(),
                 last: None,
                 records: Vec::new(),
@@ -367,9 +373,7 @@ impl FaucetPublisher {
 
         for partition in partitions {
             let Some(last) = partition.last.filter(|_| !partition.records.is_empty()) else {
-                if partition.clears_gap {
-                    marks.gaps.remove(&partition.scope);
-                }
+                marks.close_gaps(&partition.scope, &partition.closes);
                 continue;
             };
             let written = self
@@ -382,9 +386,7 @@ impl FaucetPublisher {
                 .await;
             match written {
                 Ok(report) => {
-                    if partition.clears_gap {
-                        marks.gaps.remove(&partition.scope);
-                    }
+                    marks.close_gaps(&partition.scope, &partition.closes);
                     marks.committed.insert(partition.scope.clone(), Some(last));
                     // The token is in, so a retry would skip the lost rows: hand them to the error handler.
                     if let Err(error) = report.check(partition.records.len()) {
@@ -397,9 +399,7 @@ impl FaucetPublisher {
                     let error = publisher_error(error);
                     let failed = fail_pending(outcomes, &partition.pending, &error);
                     if matches!(error, PublisherError::NonRetryable(_)) {
-                        if partition.clears_gap {
-                            marks.gaps.remove(&partition.scope);
-                        }
+                        marks.close_gaps(&partition.scope, &partition.closes);
                     } else {
                         let first = failed.iter().map(|&index| positions[index].offset).min();
                         marks.open_gap(&partition.scope, first);
@@ -443,24 +443,35 @@ struct FlushFailure {
 struct Watermarks {
     /// Last committed source position; `None` once looked up and never committed.
     committed: HashMap<String, Option<u64>>,
-    /// The first position whose write failed and will be retried. Later positions wait
-    /// for it: written first, they would move the watermark past it.
-    gaps: HashMap<String, u64>,
+    /// Positions whose write failed and will be retried. Later positions wait for
+    /// them: written first, they would move the watermark past them.
+    gaps: HashMap<String, BTreeSet<u64>>,
 }
 
 impl Watermarks {
     fn open_gap(&mut self, scope: &str, at: Option<u64>) {
         let Some(at) = at else { return };
-        let gap = self.gaps.entry(scope.to_string()).or_insert(at);
-        *gap = (*gap).min(at);
+        self.gaps.entry(scope.to_string()).or_default().insert(at);
+    }
+
+    fn close_gaps(&mut self, scope: &str, positions: &[u64]) {
+        let Some(gaps) = self.gaps.get_mut(scope) else {
+            return;
+        };
+        for position in positions {
+            gaps.remove(position);
+        }
+        if gaps.is_empty() {
+            self.gaps.remove(scope);
+        }
     }
 }
 
 /// One source partition's share of an `exactly_once` batch.
 struct Partition {
     scope: String,
-    /// Whether the batch sends the scope's failed position again, or the scope has none.
-    clears_gap: bool,
+    /// The scope's failed positions this batch sends again.
+    closes: Vec<u64>,
     /// Messages past the committed position.
     pending: Vec<usize>,
     /// The token to commit: the highest pending position, rejected messages included.

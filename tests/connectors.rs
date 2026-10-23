@@ -349,6 +349,49 @@ async fn a_batch_below_the_failed_position_keeps_later_ones_waiting() {
 }
 
 #[tokio::test]
+async fn every_failed_position_is_waited_for_until_it_is_sent_again() {
+    install();
+    let publisher = exactly_once("gaps").await;
+    let row = |offset: u64| at(json!({"id": offset}).to_string(), 0, offset);
+    let failing = |offset: u64| {
+        vec![at(
+            json!({"id": offset, "fail": true}).to_string(),
+            0,
+            offset,
+        )]
+    };
+    let send = |batch: Vec<CanonicalMessage>| publisher.send_batch(batch);
+
+    assert!(matches!(
+        send(failing(5)).await.expect("send"),
+        SentBatch::Partial { .. }
+    ));
+    assert!(matches!(
+        send(failing(3)).await.expect("send"),
+        SentBatch::Partial { .. }
+    ));
+    assert!(matches!(
+        send(vec![row(3)]).await.expect("send"),
+        SentBatch::Ack
+    ));
+    let SentBatch::Partial { failed, .. } = send(vec![row(6)]).await.expect("send") else {
+        panic!("position 6 waits for position 5");
+    };
+    assert!(matches!(failed[0].1, PublisherError::Retryable(_)));
+    assert_eq!(committed("gaps::t::0").map(|(_, rows)| rows), Some(1));
+
+    assert!(matches!(
+        send(vec![row(5)]).await.expect("send"),
+        SentBatch::Ack
+    ));
+    assert!(matches!(
+        send(vec![row(6)]).await.expect("send"),
+        SentBatch::Ack
+    ));
+    assert_eq!(committed("gaps::t::0").map(|(_, rows)| rows), Some(3));
+}
+
+#[tokio::test]
 async fn rows_the_sink_did_not_write_go_to_the_error_handler() {
     install();
     let publisher = exactly_once("lost").await;
