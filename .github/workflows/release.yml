@@ -48,6 +48,9 @@ jobs:
     name: Build npm and Python (${{ matrix.platform }})
     needs: verify-version
     runs-on: ${{ matrix.runner }}
+    # faucet-stream itself does not ship Windows yet, so a failed Windows build
+    # leaves Windows out of the release instead of blocking it.
+    continue-on-error: ${{ matrix.optional == true }}
     permissions:
       contents: read
     strategy:
@@ -69,6 +72,7 @@ jobs:
           - runner: windows-latest
             platform: win32-x64-msvc
             triple: x86_64-pc-windows-msvc
+            optional: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,6 +80,22 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      # Same system packages faucet-stream's own builds install (sasl2-sys, rdkafka, openssl).
+      - name: Install native build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+
+      # aws-lc-sys and openssl-src need nasm on PATH and Strawberry Perl, not MSYS perl.
+      - name: Install native build dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install nasm --yes --no-progress
+          echo "C:\\Program Files\\NASM" >> "$GITHUB_PATH"
+          echo "OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:
@@ -170,13 +190,6 @@ jobs:
           path: release-dist/mq-bridge-faucet-*
           if-no-files-found: error
 
-      - name: Upload npm native library
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-${{ matrix.platform }}
-          path: node/prebuilds
-          if-no-files-found: error
-
       - name: Upload Python wheel
         uses: actions/upload-artifact@v4
         with:
@@ -200,6 +213,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
 
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+
       - name: Verify crate package
         run: cargo package
 
@@ -219,9 +237,12 @@ jobs:
           path: target/package/*.crate
           if-no-files-found: error
 
+  # The npm package holds no library (too large for the registry); it
+  # downloads this release's archive and checks it against the pins below, so
+  # it is published only once the release assets exist.
   publish-npm:
     name: Publish npm package
-    needs: build-native-packages
+    needs: github-release
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -240,21 +261,23 @@ jobs:
       - name: Install npm with trusted publishing support
         run: npm install --global npm@11.5.1
 
-      - name: Download native libraries
+      - name: Download standalone plugin archives
         uses: actions/download-artifact@v4
         with:
-          pattern: npm-*
-          path: node/prebuilds
+          pattern: standalone-*
+          path: artifacts
           merge-multiple: true
+
+      - name: Pin the archive checksums
+        run: python3 scripts/pin_checksums.py "${GITHUB_REF_NAME}" artifacts
 
       - name: Create npm tarball
         working-directory: node
-        run: mkdir -p ../dist && npm pack --pack-destination ../dist
-
-      - name: Publish to npm
-        env:
-          NPM_CONFIG_PROVENANCE: "true"
-        run: npm publish ./dist/*.tgz --access public
+        run: |
+          cp ../LICENSE-MIT ../LICENSE-APACHE .
+          mkdir -p ../dist
+          npm pack --pack-destination ../dist
+          tar tzf ../dist/*.tgz | grep -qx package/checksums.json
 
       - name: Upload npm tarball
         uses: actions/upload-artifact@v4
@@ -262,6 +285,11 @@ jobs:
           name: npm-tarball
           path: dist/*.tgz
           if-no-files-found: error
+
+      - name: Publish to npm
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: npm publish ./dist/*.tgz --access public
 
   publish-pypi:
     name: Publish Python wheels
@@ -296,7 +324,7 @@ jobs:
 
   github-release:
     name: Create GitHub release
-    needs: [publish-crate, publish-npm, publish-pypi]
+    needs: [publish-crate, publish-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -307,12 +335,6 @@ jobs:
           pattern: standalone-*
           path: artifacts/plugins
           merge-multiple: true
-
-      - name: Download npm tarball
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-tarball
-          path: artifacts/npm
 
       - name: Download Python wheels
         uses: actions/download-artifact@v4
@@ -378,6 +400,7 @@ jobs:
     name: Conda ${{ matrix.target }} package
     needs: github-release
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.optional == true }}
     permissions:
       contents: read
     strategy:
@@ -396,6 +419,7 @@ jobs:
           - target: win-64
             runner: windows-latest
             artifact: standalone-win32-x64-msvc
+            optional: true
     steps:
       - uses: actions/checkout@v4
         with:

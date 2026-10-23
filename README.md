@@ -28,9 +28,15 @@ input:
 | `config` | both | the connector's configuration, as documented by faucet |
 | `auth` | both | named auth providers a connector refers to with `auth: { ref: <name> }` |
 | `state_path` | input | directory the source's bookmark is stored in; unset reads from the start each run |
-| `state_key` | input | bookmark key; defaults to the connector's own key, then to the route name |
+| `state_key` | both | input: bookmark key; defaults to the connector's own key, then to the route name. Output: prefix of the `exactly_once` commit-token scope; defaults to the route name |
 | `page_size` | input | records per page requested from the source, default 1000 |
 | `idle_timeout_ms` | input | ends a `--drain` run once the source was quiet this long |
+| `flush` | output | `batch` (default) flushes the sink before every ack; `periodic` flushes every `flush_interval_ms` and when the route ends |
+| `flush_interval_ms` | output | interval for `flush: periodic`, default 1000 |
+| `exactly_once` | output | commit each batch atomically with its source position and skip what was already committed; see below |
+| `masking` | output | faucet's `masking:` block, applied to each batch first |
+| `quality` | output | faucet's `quality:` block, run after masking |
+| `contract` | output | faucet's `contract:` block, run after the quality checks |
 
 `examples/rest_to_jsonl.yaml` is a complete route.
 
@@ -81,15 +87,54 @@ connectors this build has.
   (at-least-once). The file is the one faucet's own file state store writes.
 - The input ends when the source does. A source that never ends (Kafka, CDC,
   webhook) needs `idle_timeout_ms` to finish under `--drain`.
-- The output flushes the sink after every batch, so an acknowledged message is
-  written. File-shaped sinks (Parquet, S3) therefore write one object per batch;
-  raise the route's batch size for them.
+- With `flush: batch` the output flushes the sink after every batch, so an
+  acknowledged message is written. That is expensive for file sinks: JSONL
+  fsyncs on every flush, and a format that cannot be appended to (Parquet)
+  rewrites the whole file on the next write after a flush, so the cost grows
+  with the square of the file size. `flush: periodic` avoids both: mq-bridge
+  (1.1 and later) holds the source's commits and releases them after each
+  flush, so a crash redelivers what was not flushed yet instead of losing it.
+  For long Parquet runs also set faucet's `max_records_per_file`.
+- `exactly_once: true` writes each batch with faucet's commit-token protocol:
+  rows and the batch's highest source position commit in one transaction,
+  and on restart everything at or below the committed position is skipped.
+  It needs a sink with commit tokens (SQL databases such as `sqlite`,
+  `postgres`, `mysql`, `mssql`, and others such as `kafka`, `bigquery`,
+  `snowflake`), `source_metadata: true` on an mq-bridge input that records
+  positions (file, Kafka, Postgres CDC, MongoDB, sqlx). A later batch
+  committing first would mark an earlier one as done, so the output makes
+  mq-bridge send in source order at any `concurrency`, and after a failed
+  write it refuses later batches of that partition (to be retried) until the
+  failed position is sent again. Set `state_key`: the route name mq-bridge
+  passes is internal.
+  Each source partition commits on its own, so a failed write fails only that
+  partition's messages. Checks cannot quarantine here, as in faucet: the
+  position commits past a rejected record, and a crash before the `dlq` saw
+  it would lose it. A replayed message that is not JSON is rejected again.
 - A sink failure is retried unless faucet reports the record or the
   configuration as the cause.
+- `write_mode`, `key` and `delete_marker` go in the sink's `config`, as in
+  faucet. Upsert and delete need `column_mapping: auto_map` on the SQL sinks;
+  with a key the route reports itself as effectively-once. Staged loads are
+  the sink's own setting as well.
+- `write_mode: overwrite` stages the route's writes and swaps them in when the
+  route completes; a stopped or failed route discards the staging. A reconnect
+  starts a new staging, so the input has to read from the start again, and
+  mq-bridge only logs a failed swap as a warning. It cannot be combined with
+  `exactly_once`. Use an input that reads the whole dataset on every run: one
+  that resumes from a stored position (a consumer group, a durable consumer,
+  `state_path`) or removes what it reads (a queue) replaces the table with
+  only the new records. mq-bridge (1.1 and later) refuses such a route at
+  start, as faucet does; a faucet input counts as reading everything unless
+  it reads a queue or a live subscription, or resumes from its `state_path`.
+- `masking`, `quality` and `contract` run per batch, in faucet's order. A
+  record a check quarantines fails its message without retry, so it reaches
+  mq-bridge's `dlq` middleware; a check set to `abort` or `fail` fails the
+  whole batch. Batch-level quality checks see one mq-bridge batch, not a
+  faucet page. The DLQ receives the original message, before masking.
 
-Not driven: faucet's run-level features (overwrite and staged-load write modes,
-exactly-once commit tokens, quality checks, contracts, masking, transforms).
-Use mq-bridge middleware for the per-message ones.
+Not driven: faucet's transforms (use mq-bridge middleware), schema-drift
+policies, rollback and lineage.
 
 ## Using it
 

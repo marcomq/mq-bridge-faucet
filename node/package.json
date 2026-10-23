@@ -5,6 +5,9 @@
   "license": "MIT OR Apache-2.0",
   "main": "index.js",
   "types": "index.d.ts",
+  "bin": {
+    "mq-bridge-faucet": "install.js"
+  },
   "exports": {
     ".": {
       "types": "./index.d.ts",
@@ -19,9 +22,12 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "install.js",
+    "checksums.json",
     "README.md",
     "mq-bridge-plugin.json",
-    "prebuilds/"
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "keywords": [
     "messaging",

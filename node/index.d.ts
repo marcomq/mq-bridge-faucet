@@ -2,11 +2,16 @@
 export const ENDPOINT_NAME: "faucet";
 
 /**
- * Absolute path of the bundled plugin library for this platform.
+ * Absolute path of the plugin library for this platform.
  *
- * Throws if the package has no prebuild for the current platform.
+ * Looks at `MQ_BRIDGE_FAUCET_LIBRARY`, the download cache, and conda and
+ * Homebrew installs, then downloads the release archive unless
+ * `MQ_BRIDGE_FAUCET_NO_DOWNLOAD` is set. Throws if none of these succeed.
  */
 export function libraryPath(): string;
+
+/** Download this version's release archive into the cache; resolves to the library path. */
+export function install(): Promise<string>;
 
 /**
  * Register the `faucet` endpoint with mq-bridge.
