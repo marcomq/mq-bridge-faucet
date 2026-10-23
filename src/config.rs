@@ -3,6 +3,11 @@ use std::path::PathBuf;
 
 use anyhow::anyhow;
 use faucet_cli::auth_catalog::{build_auth_catalog, AuthCatalog};
+use faucet_cli::registry;
+use faucet_core::contract::ContractSpec;
+use faucet_core::masking::MaskingSpec;
+use faucet_core::quality::QualitySpec;
+use faucet_core::write_mode::WriteSpec;
 use mq_bridge::errors::InvalidConfig;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -22,7 +27,8 @@ pub struct FaucetConfig {
     /// Input only: directory the source's bookmark is kept in. Unset reads from the start each run.
     #[serde(default)]
     pub state_path: Option<PathBuf>,
-    /// Input only: bookmark key. Defaults to the connector's own key, then the route name.
+    /// Input: bookmark key. Defaults to the connector's own key, then the route name.
+    /// Output with `exactly_once`: prefix of the commit-token scope. Defaults to the route name.
     #[serde(default)]
     pub state_key: Option<String>,
     /// Input only: records per page requested from the source.
@@ -31,15 +37,64 @@ pub struct FaucetConfig {
     /// Input only: ends a `--drain` run once the source was quiet this long. Unset waits for the source to finish.
     #[serde(default)]
     pub idle_timeout_ms: Option<u64>,
+    /// Output only: when the sink is flushed. `batch` flushes before every ack; `periodic`
+    /// every `flush_interval_ms`, and the route commits the source only after a flush.
+    #[serde(default)]
+    pub flush: FlushMode,
+    /// Output only: interval for `flush: periodic`.
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+    /// Output only: commit each batch together with its source position, skipping what an
+    /// earlier run already committed. Needs a sink with commit tokens (SQL databases and
+    /// others), `source_metadata: true` on the input.
+    #[serde(default)]
+    pub exactly_once: bool,
+    /// Output only: faucet's masking policy, applied to each batch before the checks.
+    #[serde(default)]
+    pub masking: Option<MaskingSpec>,
+    /// Output only: faucet's quality checks. A quarantined record fails its message
+    /// without retry, so mq-bridge's `dlq` middleware receives it. Not with `exactly_once`.
+    #[serde(default)]
+    pub quality: Option<QualitySpec>,
+    /// Output only: faucet's data contract, checked after the quality checks.
+    #[serde(default)]
+    pub contract: Option<ContractSpec>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FlushMode {
+    #[default]
+    Batch,
+    Periodic,
 }
 
 fn default_page_size() -> usize {
     faucet_core::DEFAULT_BATCH_SIZE
 }
 
+fn default_flush_interval_ms() -> u64 {
+    1000
+}
+
 impl FaucetConfig {
     pub(crate) fn parse(value: &Value) -> Result<Self, InvalidConfig> {
         serde_json::from_value(value.clone()).map_err(|e| InvalidConfig(e.into()))
+    }
+
+    /// Output: whether the sink replaces its target with each run's data.
+    pub(crate) fn overwrites(&self) -> bool {
+        serde_json::from_value::<WriteSpec>(self.config.clone())
+            .is_ok_and(|write| write.is_overwrite())
+    }
+
+    /// Input: whether every run reads the whole data set, the same test faucet applies
+    /// before it lets a source feed `write_mode: overwrite`.
+    pub(crate) fn replays_from_start(&self) -> bool {
+        let kind = self.connector.as_str();
+        !registry::source_reads_a_delta(kind, &self.config)
+            && !(self.state_path.is_some()
+                && registry::source_resumes_from_bookmark(kind, &self.config))
     }
 
     pub(crate) fn auth_catalog(&self) -> Result<AuthCatalog, InvalidConfig> {
