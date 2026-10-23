@@ -170,13 +170,6 @@ jobs:
           path: release-dist/mq-bridge-faucet-*
           if-no-files-found: error
 
-      - name: Upload npm native library
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-${{ matrix.platform }}
-          path: node/prebuilds
-          if-no-files-found: error
-
       - name: Upload Python wheel
         uses: actions/upload-artifact@v4
         with:
@@ -219,9 +212,12 @@ jobs:
           path: target/package/*.crate
           if-no-files-found: error
 
+  # The npm package holds no library (too large for the registry); it
+  # downloads this release's archive and checks it against the pins below, so
+  # it is published only once the release assets exist.
   publish-npm:
     name: Publish npm package
-    needs: build-native-packages
+    needs: github-release
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -240,21 +236,23 @@ jobs:
       - name: Install npm with trusted publishing support
         run: npm install --global npm@11.5.1
 
-      - name: Download native libraries
+      - name: Download standalone plugin archives
         uses: actions/download-artifact@v4
         with:
-          pattern: npm-*
-          path: node/prebuilds
+          pattern: standalone-*
+          path: artifacts
           merge-multiple: true
+
+      - name: Pin the archive checksums
+        run: python3 scripts/pin_checksums.py "${GITHUB_REF_NAME}" artifacts
 
       - name: Create npm tarball
         working-directory: node
-        run: mkdir -p ../dist && npm pack --pack-destination ../dist
-
-      - name: Publish to npm
-        env:
-          NPM_CONFIG_PROVENANCE: "true"
-        run: npm publish ./dist/*.tgz --access public
+        run: |
+          cp ../LICENSE-MIT ../LICENSE-APACHE .
+          mkdir -p ../dist
+          npm pack --pack-destination ../dist
+          tar tzf ../dist/*.tgz | grep -qx package/checksums.json
 
       - name: Upload npm tarball
         uses: actions/upload-artifact@v4
@@ -262,6 +260,11 @@ jobs:
           name: npm-tarball
           path: dist/*.tgz
           if-no-files-found: error
+
+      - name: Publish to npm
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: npm publish ./dist/*.tgz --access public
 
   publish-pypi:
     name: Publish Python wheels
@@ -296,7 +299,7 @@ jobs:
 
   github-release:
     name: Create GitHub release
-    needs: [publish-crate, publish-npm, publish-pypi]
+    needs: [publish-crate, publish-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -307,12 +310,6 @@ jobs:
           pattern: standalone-*
           path: artifacts/plugins
           merge-multiple: true
-
-      - name: Download npm tarball
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-tarball
-          path: artifacts/npm
 
       - name: Download Python wheels
         uses: actions/download-artifact@v4
