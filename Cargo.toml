@@ -57,3 +57,6 @@ connectors = [
     "faucet-cli/file-format-parquet",
     "faucet-cli/google-sa",
 ]
+
+[profile.release]
+strip = true

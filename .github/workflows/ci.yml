@@ -40,6 +40,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      # Same system packages faucet-stream's own CI installs (sasl2-sys, rdkafka, openssl).
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+
       - name: Endpoint behaviour, linked and plugin-loaded
         run: cargo test
 

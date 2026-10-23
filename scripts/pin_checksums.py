@@ -20,6 +20,8 @@ TARGETS = {
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 }
+# The release workflow lets these builds fail without blocking the release.
+OPTIONAL_TARGETS = {"x86_64-pc-windows-msvc"}
 
 
 def main() -> None:
@@ -33,8 +35,11 @@ def main() -> None:
         name = name.lstrip("*")
         if name.startswith(prefix):
             by_target[name.removeprefix(prefix).removesuffix(".tar.gz")] = digest
-    if set(by_target) != TARGETS:
-        raise SystemExit(f"expected archives for {sorted(TARGETS)}, found {sorted(by_target)}")
+    found = set(by_target)
+    if not TARGETS - OPTIONAL_TARGETS <= found <= TARGETS:
+        raise SystemExit(f"expected archives for {sorted(TARGETS)}, found {sorted(found)}")
+    for missing in sorted(TARGETS - found):
+        print(f"warning: no archive for optional target {missing}", file=sys.stderr)
 
     checksums = dict(sorted(by_target.items()))
     (ROOT / "node" / "checksums.json").write_text(json.dumps(checksums, indent=2) + "\n")
