@@ -284,12 +284,13 @@ impl FaucetPublisher {
         let written = self
             .write_exactly_once(&mut marks, &scopes, &positions, &messages, &mut outcomes)
             .await;
-        if let Err(error) = &written {
-            if !matches!(error, PublisherError::NonRetryable(_)) {
-                for (scope, indexes) in &scopes {
-                    let first = indexes.iter().map(|&index| positions[index].offset).min();
-                    marks.open_gap(scope, first);
-                }
+        // Every position to be sent again is a gap; every settled one closes its gap.
+        for (scope, indexes) in &scopes {
+            for &index in indexes {
+                let error = written.as_ref().err().or(outcomes[index].as_ref());
+                let resent =
+                    error.is_some_and(|error| !matches!(error, PublisherError::NonRetryable(_)));
+                marks.track(scope, positions[index].offset, resent);
             }
         }
         written?;
@@ -329,13 +330,9 @@ impl FaucetPublisher {
                 }
                 continue;
             }
-            let closes = gaps
-                .map(|gaps| gaps.range(..=highest).copied().collect())
-                .unwrap_or_default();
             let done = self.committed_position(&mut marks.committed, scope).await?;
             let mut partition = Partition {
                 scope: scope.clone(),
-                closes,
                 pending: Vec::new(),
                 last: None,
                 records: Vec::new(),
@@ -373,7 +370,6 @@ impl FaucetPublisher {
 
         for partition in partitions {
             let Some(last) = partition.last.filter(|_| !partition.records.is_empty()) else {
-                marks.close_gaps(&partition.scope, &partition.closes);
                 continue;
             };
             let written = self
@@ -386,7 +382,6 @@ impl FaucetPublisher {
                 .await;
             match written {
                 Ok(report) => {
-                    marks.close_gaps(&partition.scope, &partition.closes);
                     marks.committed.insert(partition.scope.clone(), Some(last));
                     // The token is in, so a retry would skip the lost rows: hand them to the error handler.
                     if let Err(error) = report.check(partition.records.len()) {
@@ -396,14 +391,7 @@ impl FaucetPublisher {
                 }
                 // Each partition commits on its own, so only this one's messages fail.
                 Err(error) => {
-                    let error = publisher_error(error);
-                    let failed = fail_pending(outcomes, &partition.pending, &error);
-                    if matches!(error, PublisherError::NonRetryable(_)) {
-                        marks.close_gaps(&partition.scope, &partition.closes);
-                    } else {
-                        let first = failed.iter().map(|&index| positions[index].offset).min();
-                        marks.open_gap(&partition.scope, first);
-                    }
+                    fail_pending(outcomes, &partition.pending, &publisher_error(error));
                 }
             }
         }
@@ -449,18 +437,15 @@ struct Watermarks {
 }
 
 impl Watermarks {
-    fn open_gap(&mut self, scope: &str, at: Option<u64>) {
-        let Some(at) = at else { return };
-        self.gaps.entry(scope.to_string()).or_default().insert(at);
-    }
-
-    fn close_gaps(&mut self, scope: &str, positions: &[u64]) {
+    fn track(&mut self, scope: &str, at: u64, resent: bool) {
+        if resent {
+            self.gaps.entry(scope.to_string()).or_default().insert(at);
+            return;
+        }
         let Some(gaps) = self.gaps.get_mut(scope) else {
             return;
         };
-        for position in positions {
-            gaps.remove(position);
-        }
+        gaps.remove(&at);
         if gaps.is_empty() {
             self.gaps.remove(scope);
         }
@@ -470,8 +455,6 @@ impl Watermarks {
 /// One source partition's share of an `exactly_once` batch.
 struct Partition {
     scope: String,
-    /// The scope's failed positions this batch sends again.
-    closes: Vec<u64>,
     /// Messages past the committed position.
     pending: Vec<usize>,
     /// The token to commit: the highest pending position, rejected messages included.
