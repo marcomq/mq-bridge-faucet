@@ -57,6 +57,33 @@ connectors = [
     "faucet-cli/file-format-parquet",
     "faucet-cli/google-sa",
 ]
+# Endpoint parity with faucet's prebuilt `full` binaries, minus its CLI and
+# server features. Release packages build with this; local builds stay slim.
+full = [
+    "connectors",
+    "faucet-cli/kafka-schema-registry",
+    "faucet-cli/source-oracle",
+    "faucet-cli/source-oracle-cdc",
+    "faucet-cli/sink-oracle",
+    "faucet-cli/delta-s3",
+    "faucet-cli/delta-azure",
+    "faucet-cli/delta-gcs",
+    "faucet-cli/source-iceberg-glue",
+    "faucet-cli/source-iceberg-hms",
+    "faucet-cli/source-iceberg-sql",
+    "faucet-cli/source-rest-excel",
+    "faucet-cli/source-xml-excel",
+    "faucet-cli/sink-clickhouse-staging",
+    "faucet-cli/sink-mssql-staging",
+    "faucet-cli/sink-databricks-staging",
+    "faucet-cli/file-formats",
+    "faucet-cli/arrow",
+    "faucet-cli/mtls",
+    "faucet-cli/rabbitmq-tls",
+    "faucet-cli/oauth1",
+    "faucet-cli/encryption",
+    "faucet-cli/quality-jsonschema",
+]
 
 [profile.release]
 strip = true

@@ -214,18 +214,6 @@ impl FaucetPublisher {
         &self,
         messages: Vec<CanonicalMessage>,
     ) -> Result<SentBatch, PublisherError> {
-        // TEMP benchmark switch, remove before commit.
-        match std::env::var("XP_STAGE").as_deref() {
-            Ok("noop") => {
-                let n = messages.len();
-                return SentBatch::from_outcomes(messages, (0..n).map(|_| None::<PublisherError>).collect::<Vec<_>>());
-            }
-            Ok("parse") => {
-                let n = parse_payloads(&messages).await.len();
-                return SentBatch::from_outcomes(messages, (0..n).map(|_| None::<PublisherError>).collect::<Vec<_>>());
-            }
-            _ => {}
-        }
         let mut records = Vec::with_capacity(messages.len());
         let mut indexes = Vec::with_capacity(messages.len());
         let mut outcomes: Vec<Option<PublisherError>> = Vec::with_capacity(messages.len());
