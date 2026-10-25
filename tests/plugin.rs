@@ -47,6 +47,7 @@ async fn copied(factory: &dyn CustomEndpointFactory) -> String {
         assert!(matches!(sent, SentBatch::Ack));
         (batch.commit)(acks).await.expect("commit the batch");
     }
+    publisher.flush().await.expect("flush the publisher");
     std::fs::read_to_string(&output).expect("read the jsonl")
 }
 
