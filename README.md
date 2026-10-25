@@ -6,7 +6,7 @@ It adds the connectors mq-bridge has no endpoint for (REST and GraphQL APIs,
 Snowflake, BigQuery, Iceberg, Delta, Singer taps and more) to any mq-bridge
 route, next to the middleware and endpoints mq-bridge already has.
 
-It needs mq-bridge 1.2 or later and Rust 1.96 to build.
+It needs mq-bridge 1.1 or later and Rust 1.96 to build.
 
 ## Configuration
 

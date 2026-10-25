@@ -12,9 +12,25 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 WORK = REPO / "target" / "bench"
 EXT = "dylib" if platform.system() == "Darwin" else "so"
+TIME_FLAG = "-l" if platform.system() == "Darwin" else "-v"
 PLUGIN = os.environ.get("PLUGIN", str(REPO / "target" / "release" / f"libmq_bridge_faucet.{EXT}"))
 MQB = os.environ.get("MQB", "mqb")
-FAUCET = os.environ.get("FAUCET") or next((str(p) for p in sorted(WORK.glob("faucet-cli-*/*/faucet"))), None)
+
+
+def find_faucet():
+    if os.environ.get("FAUCET"):
+        return os.environ["FAUCET"]
+    found = sorted(WORK.glob("faucet-cli-*/*/faucet"))
+    lock = re.search(r'name = "faucet-cli"\nversion = "([^"]+)"', (REPO / "Cargo.lock").read_text())
+    match = [p for p in found if lock and p.parent.parent.name == f"faucet-cli-{lock.group(1)}"]
+    if match or len(found) == 1:
+        return str((match or found)[0])
+    if found:
+        raise SystemExit("several faucet CLIs cached, none matching Cargo.lock: set FAUCET")
+    return None
+
+
+FAUCET = find_faucet()
 RUNS = int(os.environ.get("RUNS", "3"))
 TIMEOUT = int(os.environ.get("TIMEOUT", "300"))
 ONLY = os.environ.get("ONLY", "").split(",") if os.environ.get("ONLY") else None
@@ -45,7 +61,8 @@ def lines(o, name):
 def parquet_rows(o, name):
     import pyarrow.parquet as pq
     files = sorted((o / name).rglob("*.parquet"))
-    return f"{sum(pq.ParquetFile(f).metadata.num_rows for f in files)} rows / {len(files)} files"
+    rows = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+    return rows, f"{rows} rows / {len(files)} files"
 
 
 def sqlite_rows(o, name):
@@ -125,15 +142,19 @@ def command(kind, inp, outp, o):
 def run_once(cmd, o):
     start = time.perf_counter()
     try:
-        proc = subprocess.run(["/usr/bin/time", "-l", *cmd], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        proc = subprocess.run(["/usr/bin/time", TIME_FLAG, *cmd], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                               text=True, cwd=o, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"timeout after {TIMEOUT} s")
     wall = time.perf_counter() - start
     if proc.returncode != 0:
         raise RuntimeError(f"exit {proc.returncode}\n" + "\n".join(proc.stderr.strip().splitlines()[-8:]))
+    # macOS `time -l` reports bytes, GNU `time -v` kilobytes.
     rss = re.search(r"(\d+)\s+maximum resident set size", proc.stderr)
-    return wall, int(rss.group(1)) / 2**20 if rss else float("nan")
+    if rss:
+        return wall, int(rss.group(1)) / 2**20
+    rss = re.search(r"Maximum resident set size \(kbytes\): (\d+)", proc.stderr)
+    return wall, int(rss.group(1)) / 2**10 if rss else float("nan")
 
 
 def main():
@@ -167,7 +188,11 @@ def main():
                 print(f"  {title} / {variant}: {wall:.2f} s", file=sys.stderr, flush=True)
                 rsss.append(rss)
                 if check:
-                    verified = str(check(OUT))
+                    result = check(OUT)
+                    count, verified = result if isinstance(result, tuple) else (result, str(result))
+                    if count != n:
+                        error = f"output has {count} rows, expected {n}"
+                        break
             row = dict(case=title, variant=variant, runs=len(walls))
             if walls:
                 med = statistics.median(walls)
@@ -187,6 +212,8 @@ def main():
     for r in results:
         print(f"| {r['case']} | {r['variant']} | {r.get('median_s', 'FAIL')} | {r.get('max_s', '-')} | {r.get('rec_per_s', '-')} "
               f"| {r.get('max_rss_mb', '-')} | {r.get('output', r.get('error', '').splitlines()[0] if r.get('error') else '-')} |")
+    if any("error" in r for r in results):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
