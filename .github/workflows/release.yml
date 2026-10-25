@@ -44,6 +44,18 @@ jobs:
           print(f"releasing {expected}")
           PY
 
+      # Fails here in minutes instead of after the native builds.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+
+      - name: Verify crate package
+        run: cargo package --locked
+
   build-native-packages:
     name: Build npm and Python (${{ matrix.platform }})
     needs: verify-version
