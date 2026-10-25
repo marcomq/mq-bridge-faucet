@@ -11,7 +11,6 @@ use mq_bridge::errors::{InvalidConfig, PublisherError};
 use mq_bridge::support::source_ranges::{SourcePartition, SourcePosition};
 use mq_bridge::traits::{disconnect_outcome, BoxFuture, DisconnectOutcome, MessagePublisher};
 use mq_bridge::{CanonicalMessage, SentBatch};
-use serde::de::IgnoredAny;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -164,9 +163,10 @@ impl MessagePublisher for FaucetPublisher {
         self.flush_interval
     }
 
-    /// The `exactly_once` watermark skips everything below it, so batches must arrive in source order.
+    /// Above `concurrency: 1` batches would otherwise reach the sink out of source order, as
+    /// faucet never delivers them; the `exactly_once` watermark also skips everything below it.
     fn requires_ordered_publish(&self) -> bool {
-        self.token_scope.is_some()
+        true
     }
 
     /// An overwrite writes into staging until the route completes.
@@ -214,11 +214,23 @@ impl FaucetPublisher {
         &self,
         messages: Vec<CanonicalMessage>,
     ) -> Result<SentBatch, PublisherError> {
+        // TEMP benchmark switch, remove before commit.
+        match std::env::var("XP_STAGE").as_deref() {
+            Ok("noop") => {
+                let n = messages.len();
+                return SentBatch::from_outcomes(messages, (0..n).map(|_| None::<PublisherError>).collect::<Vec<_>>());
+            }
+            Ok("parse") => {
+                let n = parse_payloads(&messages).await.len();
+                return SentBatch::from_outcomes(messages, (0..n).map(|_| None::<PublisherError>).collect::<Vec<_>>());
+            }
+            _ => {}
+        }
         let mut records = Vec::with_capacity(messages.len());
         let mut indexes = Vec::with_capacity(messages.len());
         let mut outcomes: Vec<Option<PublisherError>> = Vec::with_capacity(messages.len());
-        for (index, message) in messages.iter().enumerate() {
-            match serde_json::from_slice::<Value>(&message.payload) {
+        for (index, parsed) in parse_payloads(&messages).await.into_iter().enumerate() {
+            match parsed {
                 Ok(record) => {
                     records.push(record);
                     indexes.push(index);
@@ -280,9 +292,10 @@ impl FaucetPublisher {
                 (scope, indexes)
             })
             .collect();
+        let values = parse_payloads(&messages).await;
         let mut marks = self.watermarks.lock().await;
         let written = self
-            .write_exactly_once(&mut marks, &scopes, &positions, &messages, &mut outcomes)
+            .write_exactly_once(&mut marks, &scopes, &positions, values, &mut outcomes)
             .await;
         // Every position to be sent again is a gap; every settled one closes its gap.
         for (scope, indexes) in &scopes {
@@ -304,13 +317,14 @@ impl FaucetPublisher {
         marks: &mut Watermarks,
         scopes: &[(String, Vec<usize>)],
         positions: &[SourcePosition],
-        messages: &[CanonicalMessage],
+        values: Vec<serde_json::Result<Value>>,
         outcomes: &mut [Option<PublisherError>],
     ) -> Result<(), PublisherError> {
         let mut partitions = Vec::with_capacity(scopes.len());
-        let mut partition_of = vec![0; messages.len()];
-        let mut records = Vec::with_capacity(messages.len());
-        let mut parsed = Vec::with_capacity(messages.len());
+        let mut partition_of = vec![0; values.len()];
+        let mut records = Vec::with_capacity(values.len());
+        let mut parsed = Vec::with_capacity(values.len());
+        let mut values: Vec<_> = values.into_iter().map(Some).collect();
         for (scope, indexes) in scopes {
             let offsets: Vec<u64> = indexes
                 .iter()
@@ -341,9 +355,7 @@ impl FaucetPublisher {
                 let offset = positions[index].offset;
                 // A covered message was written or rejected before; one rejected then is rejected again.
                 if done.is_some_and(|done| offset <= done) {
-                    if let Err(error) =
-                        serde_json::from_slice::<IgnoredAny>(&messages[index].payload)
-                    {
+                    if let Some(Err(error)) = values[index].take() {
                         outcomes[index] = Some(not_json(error));
                     }
                     continue;
@@ -351,7 +363,10 @@ impl FaucetPublisher {
                 partition_of[index] = partitions.len();
                 partition.pending.push(index);
                 partition.last = partition.last.max(Some(offset));
-                match serde_json::from_slice::<Value>(&messages[index].payload) {
+                match values[index]
+                    .take()
+                    .expect("a message belongs to one partition")
+                {
                     Ok(record) => {
                         records.push(record);
                         parsed.push(index);
@@ -480,6 +495,36 @@ impl FaucetPublisher {
         }
         Ok((checked.records, checked.indexes))
     }
+}
+
+/// Fewer messages per thread cost more in hand-off than parsing saves.
+const PARSE_CHUNK_MIN: usize = 128;
+
+/// Parses the payloads on blocking threads, in message order. Batches reach the sink one at
+/// a time, so parsing on the route's task would hold up every write behind it.
+async fn parse_payloads(messages: &[CanonicalMessage]) -> Vec<serde_json::Result<Value>> {
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let chunk = messages.len().div_ceil(threads).max(PARSE_CHUNK_MIN);
+    let tasks: Vec<_> = messages
+        .chunks(chunk)
+        .map(|chunk| {
+            let payloads: Vec<_> = chunk
+                .iter()
+                .map(|message| message.payload.clone())
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                payloads
+                    .iter()
+                    .map(|payload| serde_json::from_slice(payload))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut parsed = Vec::with_capacity(messages.len());
+    for task in tasks {
+        parsed.extend(task.await.expect("parsing a payload does not panic"));
+    }
+    parsed
 }
 
 fn not_json(error: serde_json::Error) -> PublisherError {

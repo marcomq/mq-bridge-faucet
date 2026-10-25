@@ -6,7 +6,7 @@ It adds the connectors mq-bridge has no endpoint for (REST and GraphQL APIs,
 Snowflake, BigQuery, Iceberg, Delta, Singer taps and more) to any mq-bridge
 route, next to the middleware and endpoints mq-bridge already has.
 
-It needs mq-bridge 0.4.18 or later and Rust 1.96 to build.
+It needs mq-bridge 1.2 or later and Rust 1.96 to build.
 
 ## Configuration
 
@@ -31,7 +31,7 @@ input:
 | `state_key` | both | input: bookmark key; defaults to the connector's own key, then to the route name. Output: prefix of the `exactly_once` commit-token scope; defaults to the route name |
 | `page_size` | input | records per page requested from the source, default 1000 |
 | `idle_timeout_ms` | input | ends a `--drain` run once the source was quiet this long |
-| `flush` | output | `batch` (default) flushes the sink before every ack; `periodic` flushes every `flush_interval_ms` and when the route ends |
+| `flush` | output | `periodic` (default) flushes every `flush_interval_ms` and when the route ends; `batch` flushes the sink before every ack |
 | `flush_interval_ms` | output | interval for `flush: periodic`, default 1000 |
 | `exactly_once` | output | commit each batch atomically with its source position and skip what was already committed; see below |
 | `masking` | output | faucet's `masking:` block, applied to each batch first |
@@ -85,16 +85,20 @@ connectors this build has.
 - A source's bookmark is stored when the batch holding the last record of its
   page is committed without a nack, so a crash replays at most that page
   (at-least-once). The file is the one faucet's own file state store writes.
+- The output receives batches in source order at any `concurrency`, as in faucet.
+  Above 1, mq-bridge still reads ahead and prepares and commits batches in
+  parallel, which overlaps reading with writing.
 - The input ends when the source does. A source that never ends (Kafka, CDC,
   webhook) needs `idle_timeout_ms` to finish under `--drain`.
-- With `flush: batch` the output flushes the sink after every batch, so an
+- With `flush: periodic` (the default) mq-bridge holds the source's commits
+  and releases them after each flush, so a crash redelivers what was not
+  flushed yet instead of losing it. faucet likewise stores a bookmark only
+  after a flush. `flush: batch` flushes the sink after every batch, so an
   acknowledged message is written. That is expensive for file sinks: JSONL
   fsyncs on every flush, and a format that cannot be appended to (Parquet)
   rewrites the whole file on the next write after a flush, so the cost grows
-  with the square of the file size. `flush: periodic` avoids both: mq-bridge
-  (1.1 and later) holds the source's commits and releases them after each
-  flush, so a crash redelivers what was not flushed yet instead of losing it.
-  For long Parquet runs also set faucet's `max_records_per_file`.
+  with the square of the file size. For long Parquet runs also set faucet's
+  `max_records_per_file`.
 - `exactly_once: true` writes each batch with faucet's commit-token protocol:
   rows and the batch's highest source position commit in one transaction,
   and on restart everything at or below the committed position is skipped.

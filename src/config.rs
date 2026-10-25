@@ -37,8 +37,9 @@ pub struct FaucetConfig {
     /// Input only: ends a `--drain` run once the source was quiet this long. Unset waits for the source to finish.
     #[serde(default)]
     pub idle_timeout_ms: Option<u64>,
-    /// Output only: when the sink is flushed. `batch` flushes before every ack; `periodic`
-    /// every `flush_interval_ms`, and the route commits the source only after a flush.
+    /// Output only: when the sink is flushed. `periodic` (default) flushes every
+    /// `flush_interval_ms`, and the route commits the source only after a flush, as faucet
+    /// persists a bookmark only after one; `batch` flushes before every ack.
     #[serde(default)]
     pub flush: FlushMode,
     /// Output only: interval for `flush: periodic`.
@@ -64,8 +65,8 @@ pub struct FaucetConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FlushMode {
-    #[default]
     Batch,
+    #[default]
     Periodic,
 }
 

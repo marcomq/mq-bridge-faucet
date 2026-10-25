@@ -20,6 +20,9 @@ use crate::config::{invalid, unknown_connector, FaucetConfig};
 
 type PageResult = Result<StreamPage, FaucetError>;
 
+/// Pages read ahead of the route, as faucet's own source-to-sink channel holds.
+const PAGES_AHEAD: usize = 4;
+
 struct Checkpoint {
     store: FileStateStore,
     key: String,
@@ -117,7 +120,7 @@ fn state_key_from(route_name: &str) -> String {
 /// Runs the source on its own task: `stream_pages` borrows the source, so the
 /// stream cannot be stored next to it. Stops when the consumer is dropped.
 fn spawn_pages(source: Box<dyn Source>, page_size: usize) -> mpsc::Receiver<PageResult> {
-    let (tx, rx) = mpsc::channel(1);
+    let (tx, rx) = mpsc::channel(PAGES_AHEAD);
     tokio::spawn(async move {
         let context = HashMap::new();
         let mut pages = source.stream_pages(&context, page_size);
