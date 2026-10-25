@@ -112,6 +112,22 @@ jobs:
           npm install --no-package-lock
           python -m pip install "mq-bridge[plugin-packaging]==0.4.18"
 
+      # The packagers run a plain `cargo build --release`, so `full` has to be
+      # a default feature for them to pick it up. The published crate stays slim.
+      - name: Build release packages with every connector
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("Cargo.toml")
+          text = manifest.read_text()
+          slim = 'default = ["plugin", "connectors"]'
+          if slim not in text:
+              raise SystemExit(f"{slim!r} not found in Cargo.toml")
+          manifest.write_text(text.replace(slim, 'default = ["plugin", "full"]'))
+          PY
+
       - name: Stage npm native library
         shell: bash
         working-directory: node

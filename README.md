@@ -64,16 +64,17 @@ As of faucet-cli 1.13 to 1.15:
   `jsonl`, `file`, `s3`, `gcs`, `azure-blob`, `sftp`, `kafka`, `kinesis`,
   `pubsub`, `sqs`, `nats`, `rabbitmq`, `http`, `stdout`, `singer`
 
-Not in the default build, the same as in faucet's own default build:
+The released packages (npm, PyPI, Homebrew, conda and the release archives)
+also include the following, like faucet's own prebuilt binaries. A source build
+gets them with `--features full`, or one at a time with faucet's own features:
 
 - `oracle`, `oracle-cdc` (sources) and `oracle` (sink). These need Oracle
-  Instant Client at runtime. Enable them with `--features
-  faucet-cli/source-oracle,faucet-cli/source-oracle-cdc,faucet-cli/sink-oracle`.
-- Optional connector extras, for example `faucet-cli/delta-s3`,
-  `faucet-cli/source-iceberg-glue`, `faucet-cli/kafka-schema-registry`,
-  `faucet-cli/rabbitmq-tls`, `faucet-cli/mtls`, `faucet-cli/oauth1` and the
-  XML, Excel, Avro and ORC file formats (`faucet-cli/file-formats`). Turn them
-  on the same way.
+  Instant Client at runtime.
+- Connector extras: Kafka schema registry, Delta on S3, Azure and GCS, the
+  Iceberg Glue, HMS and SQL catalogs, Excel for `rest` and `xml`, staging for
+  the `clickhouse`, `mssql` and `databricks` sinks, the XML, Excel, Avro and
+  ORC file formats, Arrow, mTLS, RabbitMQ TLS, OAuth 1, encryption and JSON
+  Schema quality checks.
 
 If a route names a connector that is not compiled in, the error lists the
 connectors this build has.
