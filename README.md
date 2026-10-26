@@ -76,7 +76,7 @@ input:
 | `state_path` | input | directory the source's bookmark is stored in; unset reads from the start each run |
 | `state_key` | both | input: bookmark key; defaults to the connector's own key, then to the route name. Output: prefix of the `exactly_once` commit-token scope; defaults to the route name |
 | `page_size` | input | records per page requested from the source, default 1000 |
-| `idle_timeout_ms` | input | ends a `--drain` run once the source was quiet this long |
+| `idle_timeout_ms` | input | ends a `--drain` run once the source was quiet this long; for sources that do not end by themselves, see [Behaviour](#behaviour) |
 | `flush` | output | `periodic` (default) flushes every `flush_interval_ms` and when the route ends; `batch` flushes the sink before every ack |
 | `flush_interval_ms` | output | interval for `flush: periodic`, default 1000 |
 | `exactly_once` | output | commit each batch atomically with its source position and skip what was already committed; see below |
@@ -85,6 +85,15 @@ input:
 | `contract` | output | faucet's `contract:` block, run after the quality checks |
 
 `examples/rest_to_jsonl.yaml` is a complete route.
+
+In a URI, such as `mqb copy` takes, the connector is the scheme's part after
+`faucet+` and every field is a query parameter. `config`, `auth`, `masking`,
+`quality` and `contract` are JSON, percent-encoded where the shell or URI
+needs it. Host and path are not used.
+
+```sh
+mqb copy --drain 'faucet+postgres://?config={"connection_url":"postgres://localhost/db","query":"SELECT * FROM orders"}' -
+```
 
 ## Connectors
 
@@ -135,8 +144,20 @@ connectors this build has.
 - The output receives batches in source order at any `concurrency`, as in faucet.
   Above 1, mq-bridge still reads ahead and prepares and commits batches in
   parallel, which overlaps reading with writing.
-- The input ends when the source does. A source that never ends (Kafka, CDC,
-  webhook) needs `idle_timeout_ms` to finish under `--drain`.
+- The input ends when the source does. faucet's message, CDC and webhook
+  sources end by themselves after a quiet spell or a listening window set in
+  their `config`: `idle_timeout_secs` (`nats`, `rabbitmq`, `sqs`),
+  `idle_termination_secs` (`kinesis`, `pubsub`, `dynamodb`), `idle_timeout`
+  (`kafka`, `websocket`, the CDC sources, default 30 s) or `timeout_secs`
+  (`webhook`, default 30 s). The message sources require that setting or
+  `max_messages`; `idle_timeout_ms` does not replace it. They hold back their
+  last page until that wait is over, so a route refuses an `idle_timeout_ms`
+  that is not longer. Leave `idle_timeout_ms` unset for them; it is for a
+  source that does not end by itself.
+- faucet's `nats` connectors use JetStream objects as they are: the sink needs
+  the stream to exist and the source needs `jetstream_consumer` to exist.
+  mq-bridge's own `nats` endpoint creates both, so create them first when
+  moving a route over.
 - With `flush: periodic` (the default) mq-bridge holds the source's commits
   and releases them after each flush, so a crash redelivers what was not
   flushed yet instead of losing it. faucet likewise stores a bookmark only

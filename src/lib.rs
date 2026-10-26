@@ -109,6 +109,19 @@ mod tests {
     }
 
     #[test]
+    fn a_uri_names_the_connector_after_the_plus_and_carries_config_as_json() {
+        let schema = FaucetFactory.config_schema().unwrap();
+        let uri = r#"faucet+sqlite://?config={"database_url":"x.db","table_name":"t t","write_mode":"upsert","key":["id"]}&page_size=7"#;
+        let mapped = mq_bridge::plugin::UriSchema::from_schema(&schema)
+            .config_from_uri(uri)
+            .unwrap();
+        let config = FaucetConfig::parse(&mapped.into()).unwrap();
+        assert_eq!(config.connector, "sqlite");
+        assert_eq!(config.config["table_name"], json!("t t"));
+        assert_eq!(config.page_size, 7);
+    }
+
+    #[test]
     fn an_overwrite_needs_an_input_that_reads_everything_each_run() {
         let factory = FaucetFactory;
         let sink = |mode: &str| json!({"connector": "sqlite", "config": {"database_url": "x.db", "table_name": "t", "write_mode": mode}});

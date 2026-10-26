@@ -13,10 +13,13 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Any faucet-stream source or sink: `connector` names it, `config` is passed to it unchanged.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FaucetConfig {
     /// faucet connector type, as in a faucet YAML `type:`, e.g. `rest` or `snowflake`.
+    /// In a URI it is the scheme's part after `faucet+`: `faucet+rest://?config=<json>`.
+    #[schemars(extend("x-mqb-uri" = "subscheme"))]
     pub connector: String,
     /// The connector's own configuration, as in a faucet YAML `config:` block.
     #[serde(default)]
@@ -80,7 +83,17 @@ fn default_flush_interval_ms() -> u64 {
 
 impl FaucetConfig {
     pub(crate) fn parse(value: &Value) -> Result<Self, InvalidConfig> {
-        serde_json::from_value(value.clone()).map_err(|e| InvalidConfig(e.into()))
+        let mut value = value.clone();
+        // A URI query carries these objects as JSON text.
+        for field in ["config", "auth", "masking", "quality", "contract"] {
+            let Some(Value::String(text)) = value.get(field) else {
+                continue;
+            };
+            let parsed = serde_json::from_str(text)
+                .map_err(|e| InvalidConfig(anyhow!("`{field}` is not a JSON object: {e}")))?;
+            value[field] = parsed;
+        }
+        serde_json::from_value(value).map_err(|e| InvalidConfig(e.into()))
     }
 
     /// Output: whether the sink replaces its target with each run's data.

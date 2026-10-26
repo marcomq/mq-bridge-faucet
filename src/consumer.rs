@@ -10,7 +10,7 @@ use faucet_cli::registry;
 use faucet_core::state::validate_state_key;
 use faucet_core::{FaucetError, FileStateStore, Source, StateStore, StreamPage};
 use futures::StreamExt;
-use mq_bridge::errors::ConsumerError;
+use mq_bridge::errors::{ConsumerError, InvalidConfig};
 use mq_bridge::traits::{BatchCommitFunc, MessageConsumer, MessageDisposition};
 use mq_bridge::{CanonicalMessage, ReceivedBatch};
 use serde_json::Value;
@@ -53,6 +53,7 @@ pub(crate) async fn create(
         return Err(unknown_connector("source", kind, registry::source_kinds()).into());
     }
     registry::validate_source_config(kind, route_name, config.config.clone()).map_err(invalid)?;
+    check_idle_timeout(&config)?;
     let auth = config.auth_catalog()?;
     let source = registry::build_source(kind, config.config.clone(), &auth, None)
         .await
@@ -73,6 +74,45 @@ pub(crate) async fn create(
         idle_timeout: config.idle_timeout_ms.map(Duration::from_millis),
         failed: None,
     }))
+}
+
+/// The setting with which a source ends its run by itself, after a quiet spell
+/// or a collection window, and its default in seconds. Such a source holds back
+/// its last, partial page (webhook: every page) until that wait is over.
+fn source_idle_wait(kind: &str) -> Option<(&'static str, Option<u64>)> {
+    Some(match kind {
+        "webhook" => ("timeout_secs", Some(30)),
+        "nats" | "rabbitmq" | "sqs" => ("idle_timeout_secs", None),
+        "kinesis" | "pubsub" | "dynamodb" => ("idle_termination_secs", None),
+        "kafka" | "websocket" => ("idle_timeout", None),
+        "postgres-cdc" | "mysql-cdc" | "mongodb-cdc" | "mssql-cdc" | "oracle-cdc" => {
+            ("idle_timeout", Some(30))
+        }
+        _ => return None,
+    })
+}
+
+/// A drain that gives up before the source's own idle wait ends would stop
+/// before the last page arrives, report success, and leave those records unread.
+fn check_idle_timeout(config: &FaucetConfig) -> Result<(), InvalidConfig> {
+    let Some(idle_ms) = config.idle_timeout_ms else {
+        return Ok(());
+    };
+    let Some((field, default)) = source_idle_wait(&config.connector) else {
+        return Ok(());
+    };
+    let Some(secs) = config.config.get(field).and_then(Value::as_u64).or(default) else {
+        return Ok(());
+    };
+    if idle_ms > secs.saturating_mul(1000) {
+        return Ok(());
+    }
+    Err(InvalidConfig(anyhow!(
+        "`idle_timeout_ms` ({idle_ms}) must be longer than the `{}` source's `{field}` \
+         ({secs} s): the source holds back its last page until that wait is over, so the \
+         drain would end first. Leave `idle_timeout_ms` unset: the source ends the run itself",
+        config.connector
+    )))
 }
 
 /// Opens the state store and hands the source the bookmark of the last run.
@@ -238,4 +278,36 @@ fn commit(checkpoint: Option<Arc<Checkpoint>>, bookmark: Option<Value>) -> Batch
                 .context("failed to store the faucet bookmark")
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn checked(value: Value) -> bool {
+        check_idle_timeout(&FaucetConfig::parse(&value).unwrap()).is_ok()
+    }
+
+    #[test]
+    fn a_drain_must_outwait_the_sources_own_idle_wait() {
+        let nats = |idle_ms: u64| json!({"connector": "nats", "config": {"idle_timeout_secs": 2}, "idle_timeout_ms": idle_ms});
+        assert!(!checked(nats(500)));
+        assert!(!checked(nats(2000)));
+        assert!(checked(nats(2001)));
+        assert!(checked(
+            json!({"connector": "nats", "config": {"idle_timeout_secs": 2}})
+        ));
+
+        let cdc = |idle_ms: u64| json!({"connector": "postgres-cdc", "config": {}, "idle_timeout_ms": idle_ms});
+        assert!(!checked(cdc(10_000)), "the 30 s default applies");
+        assert!(checked(cdc(31_000)));
+
+        assert!(!checked(
+            json!({"connector": "webhook", "config": {}, "idle_timeout_ms": 500})
+        ));
+        assert!(checked(
+            json!({"connector": "rest", "config": {}, "idle_timeout_ms": 500})
+        ));
+    }
 }
