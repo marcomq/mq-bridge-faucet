@@ -8,6 +8,52 @@ route, next to the middleware and endpoints mq-bridge already has.
 
 It needs mq-bridge 1.1 or later and Rust 1.96 to build.
 
+> **Status: alpha.** This plugin has not been tested against real systems yet.
+> The only tests so far are the automated ones in `tests/` (local files and
+> test connectors). Expect bugs and breaking changes, and do not rely on it for
+> production data.
+
+## Install
+
+The plugin is one native library, `libmq_bridge_faucet` (`.so`, `.dylib` or
+`.dll`). Install it next to the mq-bridge you already use; the packages do not
+pull in mq-bridge itself.
+
+```sh
+# with the mqb CLI or desktop app
+brew install marcomq/tap/mq-bridge-faucet     # macOS arm64/x86_64, Linux x86_64/arm64
+conda install -c marcomq mq-bridge-faucet     # the same, plus Windows x86_64
+
+# with the mq-bridge Python or Node.js library
+pip install mq-bridge mq-bridge-faucet
+npm install mq-bridge mq-bridge-faucet        # downloads the library on first register()
+
+# Rust, linking the endpoint into your own binary
+cargo add mq-bridge-faucet
+```
+
+Homebrew and conda put the library where mq-bridge finds it by name, so a route
+that says `custom: { name: faucet, ... }` loads it without further setup. For a
+library built from source (`cargo build --release`, in `target/release/`), copy
+it to `~/.local/share/mq-bridge/plugins/` or point `MQB_PLUGIN_DIR` at its
+directory. [Installing a plugin by name](https://github.com/marcomq/mq-bridge/blob/main/docs/PLUGINS.md#installing-a-plugin-by-name)
+lists every directory searched.
+
+## Quick start
+
+`examples/rest_to_jsonl.yaml` reads the issues of a GitHub repository through
+faucet's `rest` source and writes them with faucet's `jsonl` sink:
+
+```sh
+brew install marcomq/tap/mq-bridge-app marcomq/tap/mq-bridge-faucet
+mqb --config examples/rest_to_jsonl.yaml --drain
+```
+
+The issues land in `./issues.jsonl`, and `./state` keeps the bookmark, so the
+next run continues where this one stopped. Either side can also be any other
+mq-bridge endpoint, e.g. a faucet `postgres-cdc` source into a native `kafka`
+output.
+
 ## Configuration
 
 ```yaml
