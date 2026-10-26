@@ -100,6 +100,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
 
+      # The `full` build can exhaust RAM while linking; an exhausted runner
+      # drops off ("lost communication") instead of failing cleanly.
+      - name: Add swap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo fallocate -l 8G /swapfile-release
+          sudo chmod 600 /swapfile-release
+          sudo mkswap /swapfile-release
+          sudo swapon /swapfile-release
+          free -h
+
       # aws-lc-sys and openssl-src need nasm on PATH and Strawberry Perl, not MSYS perl.
       - name: Install native build dependencies (Windows)
         if: runner.os == 'Windows'
@@ -261,7 +272,12 @@ jobs:
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
 
       - name: Publish crate
-        run: cargo publish
+        run: |
+          if curl -sfA "mq-bridge-faucet-release" "https://crates.io/api/v1/crates/mq-bridge-faucet/${GITHUB_REF_NAME#v}" >/dev/null; then
+            echo "crate ${GITHUB_REF_NAME#v} already on crates.io, skipping"
+          else
+            cargo publish
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -324,7 +340,12 @@ jobs:
       - name: Publish to npm
         env:
           NPM_CONFIG_PROVENANCE: "true"
-        run: npm publish ./dist/*.tgz --access public
+        run: |
+          if npm view "mq-bridge-faucet@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "npm ${GITHUB_REF_NAME#v} already published, skipping"
+          else
+            npm publish ./dist/*.tgz --access public
+          fi
 
   publish-pypi:
     name: Publish Python wheels
@@ -516,4 +537,4 @@ jobs:
             exit 1
           fi
           pipx install --include-deps anaconda-client
-          anaconda upload --user marcomq --label main "${packages[@]}"
+          anaconda upload --skip-existing --user marcomq --label main "${packages[@]}"
