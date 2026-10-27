@@ -13,6 +13,15 @@ It needs mq-bridge 1.1 or later and Rust 1.96 to build.
 > against production systems or cloud services yet. Expect bugs and breaking
 > changes, and do not rely on it without testings.
 
+> **Not an official faucet-stream project.** This plugin is maintained
+> separately and is not affiliated with or endorsed by the faucet-stream
+> authors. It wraps faucet-stream's connectors to fit mq-bridge's endpoint
+> model, which may differ from how faucet-stream drives them itself (batching,
+> state, acknowledgement, error handling). A problem seen through this plugin
+> may come from the plugin, not from faucet-stream: please reproduce it with
+> faucet-stream alone before reporting it upstream, and otherwise open an issue
+> [here](https://github.com/marcomq/mq-bridge-faucet/issues).
+
 ## Install
 
 The plugin is one native library, `libmq_bridge_faucet` (`.so`, `.dylib` or
