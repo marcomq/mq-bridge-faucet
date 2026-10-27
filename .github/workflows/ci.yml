@@ -62,6 +62,9 @@ jobs:
 
       # The main connectors through the released mqb; tests/endpoints/cases.toml has the rest.
       - name: Endpoint round trips
+        # The debug S3 and GCS clients overflow the plugin runtime's default 2 MiB thread stack.
+        env:
+          RUST_MIN_STACK: "8388608"
         run: |
           mqb --version
           python3 tests/endpoints/run.py --strict --plugin "$PWD/target/debug/libmq_bridge_faucet.so" \
