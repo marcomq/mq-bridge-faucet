@@ -1,0 +1,613 @@
+# Connector round trips for tests/endpoints/run.py.
+#
+# A case writes `count` records {"id": n, "run": "$ID", "name": "näme-n"}
+# through `sink` and reads them back through `source`. Both are the faucet
+# endpoint's config (`connector`, `config`, `state_path`, ...); a table
+# without `connector` is a native mq-bridge endpoint instead. The records may
+# come back nested (a `data` column, a string holding JSON): the runner finds
+# every object with this run's `run` and checks ids 1..count arrived exactly once.
+#
+# Placeholders: $ID (unique per case and run), $DIR (scratch directory, also
+# the working directory of mqb), $HERE (this directory, for helper scripts),
+# $PORT (the broker's port), $HTTP (the
+# runner's HTTP server), $VARn and further names from `vars` or a broker's
+# `capture`/`ports`.
+#
+# The HTTP server, for sources without a sink and sinks without a source:
+#   GET  $HTTP/records/$ID     the records as a JSON array
+#   GET  $HTTP/xml/$ID         the same as <records><record>...</record></records>
+#   POST $HTTP/graphql/$ID     {"data": {"records": [...]}}
+#   POST $HTTP/collect/$ID     stores the posted record or array
+#   GET  $HTTP/collected/$ID   what was posted, as a JSON array
+#
+# Case keys: sink, source, broker, count (10), timeout (60 per mqb run),
+# vars, env, setup (commands run first; inside the broker container with
+# setup_in_broker = true), order = "input_first" (the source runs while the
+# sink writes, for sources that only see new data), settle (2, seconds before
+# writing), xfail = "why".
+# Checks: expect_ids (default 1..count), dlq_ids (ids that must land in
+# $DIR/dlq.jsonl, written by a `dlq` middleware the case configures),
+# changed (fields that must differ from what was written, e.g. masked),
+# resume (ids a second run with the same state_path may read; [] for none).
+# Broker keys: image, port, args, env, ready_log, ready_timeout (60), fixed_port
+# (the host port is chosen first and is $PORT in `args`), exec
+# (a local binary used instead of the image when on PATH), capture
+# ({ NAME = command } run in the container; its output becomes $NAME),
+# ports ({ NAME = port }, further container ports; the mapped one becomes $NAME).
+
+# ---------------------------------------------------------------- brokers
+
+[brokers.postgres]
+image = "postgres:16-alpine"
+port = 5432
+env = { POSTGRES_USER = "testuser", POSTGRES_PASSWORD = "testpass", POSTGRES_DB = "testdb" }
+args = ["-c", "wal_level=logical"]
+ready_log = "ready to accept connections(.|\\n)*ready to accept connections"
+
+[brokers.mysql]
+image = "mysql:8.4"
+port = 3306
+env = { MYSQL_ROOT_PASSWORD = "testpass", MYSQL_DATABASE = "testdb" }
+args = ["--binlog-row-metadata=FULL"]
+# The init server also says "ready for connections", on port 0.
+ready_log = "ready for connections.*port: 3306"
+ready_timeout = 120
+
+[brokers.mongodb]
+image = "mongo:7"
+port = 27017
+
+# Change streams need a replica set; the case initiates it.
+[brokers.mongodb_rs]
+image = "mongo:7"
+port = 27017
+args = ["--replSet", "rs0", "--bind_ip_all"]
+
+[brokers.redis]
+image = "redis:7-alpine"
+port = 6379
+exec = ["redis-server", "--port", "$PORT", "--save", ""]
+
+[brokers.nats]
+image = "nats:2.10-alpine"
+port = 4222
+args = ["--js"]
+exec = ["nats-server", "--js", "-a", "127.0.0.1", "-p", "$PORT"]
+
+[brokers.rabbitmq]
+image = "rabbitmq:4.1-alpine"
+port = 5672
+ready_log = "Server startup complete"
+ready_timeout = 120
+
+[brokers.kafka]
+image = "redpandadata/redpanda:v24.3.7"
+port = 9092
+args = ["redpanda", "start", "--mode", "dev-container", "--smp", "1", "--kafka-addr", "0.0.0.0:9092", "--advertise-kafka-addr", "127.0.0.1:$PORT"]
+ready_log = "Successfully started Redpanda"
+ready_timeout = 120
+fixed_port = true
+
+# MinIO no longer publishes images; S3Mock creates the bucket from its environment.
+[brokers.s3]
+image = "adobe/s3mock:3.12.0"
+port = 9090
+env = { initialBuckets = "faucet" }
+ready_log = "Started S3MockApplication"
+
+[brokers.sftp]
+image = "atmoz/sftp:alpine"
+port = 22
+args = ["foo:pass:1001:100:upload"]
+ready_log = "Server listening on"
+capture = { HOST_KEY = ["cat", "/etc/ssh/ssh_host_ed25519_key.pub"] }
+
+
+[brokers.sqs]
+image = "softwaremill/elasticmq-native:1.7.1"
+port = 9324
+ready_log = "started in"
+
+[brokers.azurite]
+image = "mcr.microsoft.com/azure-storage/azurite:3.35.0"
+port = 10000
+args = ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck"]
+ready_log = "successfully listens"
+
+[brokers.gcs]
+image = "fsouza/fake-gcs-server:1.56.1"
+port = 4443
+fixed_port = true
+args = ["-scheme", "http", "-port", "4443", "-external-url", "http://127.0.0.1:$PORT"]
+ready_log = "server started"
+
+[brokers.clickhouse]
+image = "clickhouse/clickhouse-server:26.8.36-alpine"
+port = 8123
+env = { CLICKHOUSE_USER = "test", CLICKHOUSE_PASSWORD = "test" }
+# It logs to a file unless told otherwise.
+args = ["--", "--logger.console=1"]
+ready_log = "Ready for connections"
+
+[brokers.elasticsearch]
+image = "elasticsearch:8.19.23"
+port = 9200
+env = { "discovery.type" = "single-node", "xpack.security.enabled" = "false", ES_JAVA_OPTS = "-Xms512m -Xmx512m" }
+ready_log = "started"
+ready_timeout = 120
+
+[brokers.dynamodb]
+image = "amazon/dynamodb-local:3.3.2"
+port = 8000
+ready_log = "Initializing DynamoDB Local"
+
+# ---------------------------------------------------------------- files, no broker
+
+[cases.sqlite.sink]
+connector = "sqlite"
+config = { database_url = "$DIR/t.db", table_name = "t", column_mapping = { json = { column = "data" } } }
+
+[cases.sqlite.source]
+connector = "sqlite"
+config = { database_url = "$DIR/t.db", query = "SELECT data FROM t" }
+
+[cases.csv.sink]
+connector = "csv"
+config = { path = "$DIR/t.csv" }
+
+[cases.csv.source]
+connector = "csv"
+config = { path = "$DIR/t.csv" }
+
+[cases.jsonl_file.sink]
+connector = "jsonl"
+config = { path = "$DIR/t.jsonl" }
+
+[cases.jsonl_file.source]
+connector = "file"
+config = { path = "$DIR/t.jsonl", format = "json_lines" }
+
+[cases.file_csv.sink]
+connector = "file"
+config = { path = "$DIR/t.csv", format = "csv" }
+
+[cases.file_csv.source]
+connector = "file"
+config = { path = "$DIR/t.csv", format = "csv" }
+
+[cases.file_parquet.sink]
+connector = "file"
+config = { path = "$DIR/t.parquet", format = "parquet" }
+
+[cases.file_parquet.source]
+connector = "file"
+config = { path = "$DIR/t.parquet", format = "parquet" }
+
+[cases.parquet.sink]
+connector = "parquet"
+config = { destination = { type = "local_path", path = "$DIR/t.parquet" } }
+
+[cases.parquet.source]
+connector = "parquet"
+config = { source = { type = "local_path", path = "$DIR/t.parquet" } }
+
+[cases.duckdb.sink]
+connector = "duckdb"
+config = { database = "$DIR/t.duckdb", table_name = "t", column_mapping = "auto_map" }
+
+[cases.duckdb.source]
+connector = "duckdb"
+config = { database = "$DIR/t.duckdb", query = "SELECT * FROM t" }
+
+[cases.delta.sink]
+connector = "delta"
+config = { table_uri = "$DIR/t_delta" }
+
+[cases.delta.source]
+connector = "delta"
+config = { table_uri = "$DIR/t_delta" }
+
+# ---------------------------------------------------------------- HTTP, the runner's server
+
+[cases.http_rest.sink]
+connector = "http"
+config = { url = "$HTTP/collect/$ID", batch_mode = { type = "Array" } }
+
+[cases.http_rest.source]
+connector = "rest"
+config = { base_url = "$HTTP", path = "/collected/$ID" }
+
+# The webhook source listens on $PORT; the http sink posts each record to it.
+# The source emits once `max_payloads` arrived or `timeout_secs` passed.
+[cases.webhook]
+order = "input_first"
+
+[cases.webhook.sink]
+connector = "http"
+config = { url = "http://127.0.0.1:$PORT/hook" }
+
+[cases.webhook.source]
+connector = "webhook"
+config = { listen_addr = "127.0.0.1:$PORT", path = "/hook", max_payloads = 10, timeout_secs = 20 }
+
+[cases.rest.source]
+connector = "rest"
+config = { base_url = "$HTTP", path = "/records/$ID" }
+
+[cases.graphql.source]
+connector = "graphql"
+config = { endpoint = "$HTTP/graphql/$ID", query = "{ records { id run name } }", records_path = "$.data.records", auth = { type = "none" } }
+
+[cases.xml.source]
+connector = "xml"
+config = { base_url = "$HTTP", path = "/xml/$ID", records_element_path = "records.record", method = "GET", auth = { type = "none" } }
+
+# ---------------------------------------------------------------- the plugin's own options
+
+# The bookmark in `state_path`: a second run starts at the last id. The
+# incremental filter is inclusive (`>=`), so that one record comes again.
+[cases.rest_resume]
+resume = [10]
+
+[cases.rest_resume.source]
+connector = "rest"
+config = { base_url = "$HTTP", path = "/records/$ID", replication_method = { type = "Incremental" }, replication_key = "id" }
+
+# A quarantined record fails its message without retry, so `dlq` receives it.
+[cases.quality_dlq]
+expect_ids = [1, 2, 3, 4, 5]
+dlq_ids = [6, 7, 8, 9, 10]
+
+[cases.quality_dlq.sink]
+connector = "jsonl"
+config = { path = "$DIR/t.jsonl" }
+quality = { record = [{ type = "compare", field = "id", op = "lte", value = 5, on_failure = "quarantine" }] }
+middlewares = [{ dlq = { endpoint = { file = { path = "$DIR/dlq.jsonl" } } } }]
+
+[cases.quality_dlq.source]
+connector = "file"
+config = { path = "$DIR/t.jsonl", format = "json_lines" }
+
+[cases.contract]
+expect_ids = [1, 2, 3, 4, 5, 6, 7]
+dlq_ids = [8, 9, 10]
+
+[cases.contract.sink]
+connector = "jsonl"
+config = { path = "$DIR/t.jsonl" }
+middlewares = [{ dlq = { endpoint = { file = { path = "$DIR/dlq.jsonl" } } } }]
+
+[cases.contract.sink.contract]
+version = "1"
+on_breach = "quarantine"
+fields = [
+  { name = "id", type = "integer", max = 7 },
+  { name = "run", type = "string" },
+  { name = "name", type = "string", pattern = "^näme-" },
+]
+
+[cases.contract.source]
+connector = "file"
+config = { path = "$DIR/t.jsonl", format = "json_lines" }
+
+[cases.masking]
+changed = ["name"]
+
+[cases.masking.sink]
+connector = "jsonl"
+config = { path = "$DIR/t.jsonl" }
+masking = { rules = [{ match = { fields = ["name"] }, action = { type = "hash" } }] }
+
+[cases.masking.source]
+connector = "file"
+config = { path = "$DIR/t.jsonl", format = "json_lines" }
+
+# `flush: batch` flushes the sink before every ack instead of periodically.
+[cases.flush_batch.sink]
+connector = "sqlite"
+flush = "batch"
+config = { database_url = "$DIR/t.db", table_name = "t", column_mapping = { json = { column = "data" } } }
+
+[cases.flush_batch.source]
+connector = "sqlite"
+page_size = 3
+config = { database_url = "$DIR/t.db", query = "SELECT data FROM t" }
+
+# ---------------------------------------------------------------- live brokers
+
+[cases.postgres]
+broker = "postgres"
+
+[cases.postgres.sink]
+connector = "postgres"
+config = { connection_url = "postgres://testuser:testpass@127.0.0.1:$PORT/testdb", table_name = "t_$ID", column_mapping = { jsonb = { column = "data" } } }
+
+[cases.postgres.source]
+connector = "postgres"
+config = { connection_url = "postgres://testuser:testpass@127.0.0.1:$PORT/testdb", query = "SELECT data FROM t_$ID" }
+
+[cases.mysql]
+broker = "mysql"
+
+[cases.mysql.sink]
+connector = "mysql"
+config = { connection_url = "mysql://root:testpass@127.0.0.1:$PORT/testdb", table_name = "t_$ID", column_mapping = { json = { column = "data" } } }
+
+[cases.mysql.source]
+connector = "mysql"
+config = { connection_url = "mysql://root:testpass@127.0.0.1:$PORT/testdb", query = "SELECT data FROM t_$ID" }
+
+[cases.mongodb]
+broker = "mongodb"
+
+[cases.mongodb.sink]
+connector = "mongodb"
+config = { connection_uri = "mongodb://127.0.0.1:$PORT", database = "testdb", collection = "c_$ID" }
+
+[cases.mongodb.source]
+connector = "mongodb"
+config = { connection_uri = "mongodb://127.0.0.1:$PORT", database = "testdb", collection = "c_$ID" }
+
+[cases.redis_list]
+broker = "redis"
+
+[cases.redis_list.sink]
+connector = "redis"
+config = { url = "redis://127.0.0.1:$PORT", sink_type = { type = "List", key = "l_$ID" } }
+
+[cases.redis_list.source]
+connector = "redis"
+config = { url = "redis://127.0.0.1:$PORT", source_type = { type = "List", key = "l_$ID" } }
+
+[cases.redis_stream]
+broker = "redis"
+
+[cases.redis_stream.sink]
+connector = "redis"
+config = { url = "redis://127.0.0.1:$PORT", sink_type = { type = "Stream", key = "s_$ID" } }
+
+[cases.redis_stream.source]
+connector = "redis"
+config = { url = "redis://127.0.0.1:$PORT", source_type = { type = "Stream", key = "s_$ID" } }
+
+# Core NATS keeps nothing, so the source subscribes before the sink publishes.
+# The source ends after `idle_timeout_secs` without a message.
+[cases.nats]
+broker = "nats"
+order = "input_first"
+
+[cases.nats.sink]
+connector = "nats"
+config = { servers = ["nats://127.0.0.1:$PORT"], subject = "s.$ID" }
+
+[cases.nats.source]
+connector = "nats"
+config = { servers = ["nats://127.0.0.1:$PORT"], subject = "s.$ID", idle_timeout_secs = 3 }
+
+# The plugin's `idle_timeout_ms` must outlast the connector's own idle wait (GAPS.md #1).
+[cases.nats_idle]
+broker = "nats"
+order = "input_first"
+
+[cases.nats_idle.sink]
+connector = "nats"
+config = { servers = ["nats://127.0.0.1:$PORT"], subject = "s.$ID" }
+
+[cases.nats_idle.source]
+connector = "nats"
+idle_timeout_ms = 7000
+config = { servers = ["nats://127.0.0.1:$PORT"], subject = "s.$ID", idle_timeout_secs = 4 }
+
+# The source declares and binds its queue, so it starts first.
+[cases.rabbitmq]
+broker = "rabbitmq"
+order = "input_first"
+settle = 3
+
+[cases.rabbitmq.sink]
+connector = "rabbitmq"
+config = { url = "amqp://guest:guest@127.0.0.1:$PORT/%2f", exchange = "amq.direct", routing_key = "k_$ID" }
+
+[cases.rabbitmq.source]
+connector = "rabbitmq"
+config = { url = "amqp://guest:guest@127.0.0.1:$PORT/%2f", queue = "q_$ID", bindings = [{ exchange = "amq.direct", routing_key = "k_$ID" }], idle_timeout_secs = 10 }
+
+[cases.kafka]
+broker = "kafka"
+
+[cases.kafka.sink]
+connector = "kafka"
+config = { brokers = "127.0.0.1:$PORT", topic = { type = "fixed", name = "t_$ID" } }
+
+[cases.kafka.source]
+connector = "kafka"
+config = { brokers = "127.0.0.1:$PORT", topics = ["t_$ID"], group_id = "g_$ID", auto_offset_reset = "earliest", idle_timeout = 5 }
+
+[cases.s3]
+broker = "s3"
+env = { AWS_ACCESS_KEY_ID = "test", AWS_SECRET_ACCESS_KEY = "test", AWS_REGION = "us-east-1" }
+
+[cases.s3.sink]
+connector = "s3"
+config = { bucket = "faucet", prefix = "$ID/", endpoint_url = "http://127.0.0.1:$PORT", region = "us-east-1" }
+
+[cases.s3.source]
+connector = "s3"
+config = { bucket = "faucet", prefix = "$ID/", endpoint_url = "http://127.0.0.1:$PORT", region = "us-east-1" }
+
+# The host key goes to a known_hosts file of the case, not to ~/.ssh.
+[cases.sftp]
+broker = "sftp"
+setup = [["sh", "-c", "echo \"[127.0.0.1]:$PORT $HOST_KEY\" > $DIR/known_hosts"]]
+
+[cases.sftp.sink]
+connector = "sftp"
+config = { host = "127.0.0.1", port = "$PORT", username = "foo", type = "password", config = { password = "pass" }, known_hosts = { mode = "strict", known_hosts_path = "$DIR/known_hosts" }, path = "/upload/$ID" }
+
+[cases.sftp.source]
+connector = "sftp"
+config = { host = "127.0.0.1", port = "$PORT", username = "foo", type = "password", config = { password = "pass" }, known_hosts = { mode = "strict", known_hosts_path = "$DIR/known_hosts" }, path = "/upload/$ID" }
+
+# The source creates its slot when it starts, so it starts first; the
+# publication and the table come from `psql` in the container.
+[cases.postgres_cdc]
+broker = "postgres"
+order = "input_first"
+settle = 4
+setup_in_broker = true
+setup = [["psql", "-U", "testuser", "-d", "testdb", "-c", "CREATE TABLE cdc_$ID (id int PRIMARY KEY, run text, name text); CREATE PUBLICATION pub_$ID FOR TABLE cdc_$ID;"]]
+
+[cases.postgres_cdc.sink]
+connector = "postgres"
+config = { connection_url = "postgres://testuser:testpass@127.0.0.1:$PORT/testdb", table_name = "cdc_$ID", column_mapping = "auto_map" }
+
+[cases.postgres_cdc.source]
+connector = "postgres-cdc"
+config = { connection_url = "postgres://testuser:testpass@127.0.0.1:$PORT/testdb", slot_name = "slot_$ID", publication_name = "pub_$ID", create_slot_if_missing = true, idle_timeout = 5, status_update_interval = 2 }
+
+# The same file written twice: the second run finds each position committed
+# and skips it, so every record is in the table once. `exactly_once_off` is
+# the control: without the option the second run duplicates.
+[cases.exactly_once]
+writes = 2
+seed = { source_metadata = true }
+
+[cases.exactly_once.sink]
+connector = "sqlite"
+exactly_once = true
+config = { database_url = "$DIR/t.db", table_name = "t", column_mapping = { json = { column = "data" } } }
+
+[cases.exactly_once.source]
+connector = "sqlite"
+config = { database_url = "$DIR/t.db", query = "SELECT data FROM t" }
+
+[cases.exactly_once_off]
+writes = 2
+seed = { source_metadata = true }
+xfail = "without exactly_once the second write duplicates"
+
+[cases.exactly_once_off.sink]
+connector = "sqlite"
+config = { database_url = "$DIR/t.db", table_name = "t", column_mapping = { json = { column = "data" } } }
+
+[cases.exactly_once_off.source]
+connector = "sqlite"
+config = { database_url = "$DIR/t.db", query = "SELECT data FROM t" }
+
+# ElasticMQ speaks the SQS query API; the queue is created before the run.
+[cases.sqs]
+broker = "sqs"
+setup = [["sh", "-c", "for i in $(seq 30); do curl -fsS 'http://127.0.0.1:$PORT/?Action=CreateQueue&QueueName=q$ID' && exit 0; sleep 1; done; exit 1"]]
+
+[cases.sqs.sink]
+connector = "sqs"
+config = { queue_url = "http://127.0.0.1:$PORT/000000000000/q$ID", endpoint_url = "http://127.0.0.1:$PORT", region = "us-east-1", credentials = { type = "access_key", config = { access_key_id = "x", secret_access_key = "x" } } }
+
+[cases.sqs.source]
+connector = "sqs"
+config = { queue_url = "http://127.0.0.1:$PORT/000000000000/q$ID", endpoint_url = "http://127.0.0.1:$PORT", region = "us-east-1", credentials = { type = "access_key", config = { access_key_id = "x", secret_access_key = "x" } }, idle_timeout_secs = 3, wait_time_seconds = 1 }
+
+# DynamoDB Local checks that requests are signed, not by whom.
+[cases.dynamodb]
+broker = "dynamodb"
+setup = [["sh", "-c", "for i in $(seq 30); do curl -fsS http://127.0.0.1:$PORT -H 'X-Amz-Target: DynamoDB_20120810.CreateTable' -H 'Content-Type: application/x-amz-json-1.0' -H 'Authorization: AWS4-HMAC-SHA256 Credential=x/20260101/us-east-1/dynamodb/aws4_request, SignedHeaders=host, Signature=x' -d '{\"TableName\":\"t$ID\",\"KeySchema\":[{\"AttributeName\":\"id\",\"KeyType\":\"HASH\"}],\"AttributeDefinitions\":[{\"AttributeName\":\"id\",\"AttributeType\":\"N\"}],\"BillingMode\":\"PAY_PER_REQUEST\"}' && exit 0; sleep 1; done; exit 1"]]
+
+[cases.dynamodb.sink]
+connector = "dynamodb"
+config = { table_name = "t$ID", endpoint_url = "http://127.0.0.1:$PORT", region = "us-east-1", credentials = { type = "access_key", config = { access_key_id = "x", secret_access_key = "x" } } }
+
+[cases.dynamodb.source]
+connector = "dynamodb"
+config = { table_name = "t$ID", endpoint_url = "http://127.0.0.1:$PORT", region = "us-east-1", credentials = { type = "access_key", config = { access_key_id = "x", secret_access_key = "x" } } }
+
+# `use_emulator` takes the endpoint from AZURITE_BLOB_STORAGE_URL.
+[cases.azure_blob]
+broker = "azurite"
+env = { AZURITE_BLOB_STORAGE_URL = "http://127.0.0.1:$PORT" }
+setup = [["python3", "$HERE/azurite_container.py", "$PORT", "c$ID"]]
+
+[cases.azure_blob.sink]
+connector = "azure-blob"
+config = { container = "c$ID", use_emulator = true, allow_http = true, prefix = "out/" }
+
+[cases.azure_blob.source]
+connector = "azure-blob"
+config = { container = "c$ID", use_emulator = true, allow_http = true, prefix = "out/" }
+
+[cases.gcs]
+broker = "gcs"
+setup = [["sh", "-c", "for i in $(seq 30); do curl -fsS http://127.0.0.1:$PORT/storage/v1/b -d '{\"name\":\"b$ID\"}' && exit 0; sleep 1; done; exit 1"]]
+
+[cases.gcs.sink]
+connector = "gcs"
+config = { bucket = "b$ID", prefix = "out/", storage_host = "http://127.0.0.1:$PORT", auth = { type = "anonymous" } }
+
+[cases.gcs.source]
+connector = "gcs"
+config = { bucket = "b$ID", prefix = "out/", storage_host = "http://127.0.0.1:$PORT", auth = { type = "anonymous" } }
+
+[cases.clickhouse]
+broker = "clickhouse"
+
+[cases.clickhouse.sink]
+connector = "clickhouse"
+config = { url = "http://127.0.0.1:$PORT", user = "test", password = "test", table = "t$ID", create_table = true }
+
+[cases.clickhouse.source]
+connector = "clickhouse"
+config = { url = "http://127.0.0.1:$PORT", user = "test", password = "test", query = "SELECT * FROM t$ID" }
+
+# The sink does not refresh; a short explicit refresh_interval makes the
+# records searchable before the source reads.
+[cases.elasticsearch]
+broker = "elasticsearch"
+setup = [["sh", "-c", "for i in $(seq 60); do curl -fsS -X PUT http://127.0.0.1:$PORT/i$ID -H 'Content-Type: application/json' -d '{\"settings\":{\"index.refresh_interval\":\"200ms\"}}' && exit 0; sleep 1; done; exit 1"]]
+
+[cases.elasticsearch.sink]
+connector = "elasticsearch"
+config = { base_url = "http://127.0.0.1:$PORT", index = "i$ID", auth = { type = "none" }, id_field = "id" }
+
+[cases.elasticsearch.source]
+connector = "elasticsearch"
+config = { base_url = "http://127.0.0.1:$PORT", index = "i$ID", auth = { type = "none" }, query = { match_all = {} } }
+
+# The binlog keeps the writes, so the source starts at the earliest position.
+[cases.mysql_cdc]
+broker = "mysql"
+
+[cases.mysql_cdc.sink]
+connector = "mysql"
+config = { connection_url = "mysql://root:testpass@127.0.0.1:$PORT/testdb", table_name = "t_$ID", column_mapping = { json = { column = "data" } } }
+
+[cases.mysql_cdc.source]
+connector = "mysql-cdc"
+config = { connection_url = "mysql://root:testpass@127.0.0.1:$PORT/testdb", server_id = 4242, include_tables = ["testdb.t_$ID"], start_position = { type = "earliest" }, idle_timeout = 5 }
+
+[cases.mongodb_cdc]
+broker = "mongodb_rs"
+order = "input_first"
+settle = 3
+setup_in_broker = true
+setup = [["sh", "-c", "mongosh --quiet --eval 'rs.initiate({_id: \"rs0\", members: [{_id: 0, host: \"127.0.0.1:27017\"}]})' && for i in $(seq 30); do mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true && exit 0; sleep 1; done; exit 1"]]
+
+[cases.mongodb_cdc.sink]
+connector = "mongodb"
+config = { connection_uri = "mongodb://127.0.0.1:$PORT/?directConnection=true", database = "testdb", collection = "c_$ID" }
+
+[cases.mongodb_cdc.source]
+connector = "mongodb-cdc"
+config = { connection_uri = "mongodb://127.0.0.1:$PORT/?directConnection=true", scope = { type = "collection", database = "testdb", collection = "c_$ID" }, idle_timeout = 5 }
+
+# JetStream keeps the messages, so the sink writes first. The stream and the
+# durable consumer must exist beforehand.
+[cases.nats_jetstream]
+broker = "nats"
+setup = [["python3", "$HERE/nats_jetstream.py", "$PORT", "S$ID", "js.$ID", "C$ID"]]
+
+[cases.nats_jetstream.sink]
+connector = "nats"
+config = { servers = ["nats://127.0.0.1:$PORT"], subject = "js.$ID", jetstream = true }
+
+[cases.nats_jetstream.source]
+connector = "nats"
+config = { servers = ["nats://127.0.0.1:$PORT"], subject = "js.$ID", jetstream_stream = "S$ID", jetstream_consumer = "C$ID", idle_timeout_secs = 3 }

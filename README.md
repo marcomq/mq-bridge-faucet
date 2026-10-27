@@ -8,10 +8,10 @@ route, next to the middleware and endpoints mq-bridge already has.
 
 It needs mq-bridge 1.1 or later and Rust 1.96 to build.
 
-> **Status: alpha.** This plugin has not been tested against real systems yet.
-> The only tests so far are the automated ones in `tests/` (local files and
-> test connectors). Expect bugs and breaking changes, and do not rely on it for
-> production data.
+> **Status: early.** Round trips through about 30 connectors against local
+> containers pass (see [Tested endpoints](#tested-endpoints)); nothing has run
+> against production systems or cloud services yet. Expect bugs and breaking
+> changes, and do not rely on it without testings.
 
 ## Install
 
@@ -262,6 +262,7 @@ with the list of the ones that are.
 | `src/publisher.rs` | faucet `Sink` as an mq-bridge output, error mapping |
 | `tests/plugin.rs` | CSV to JSONL, linked directly and loaded as a plugin |
 | `tests/connectors.rs` | bookmarks and per-record failures against test connectors |
+| `tests/endpoints/` | connector round trips through the installed `mqb`, see [Endpoint round trips](#endpoint-round-trips) |
 | `node/`, `python/` | packages that load the prebuilt library through mq-bridge |
 | `packaging/` | conda recipe and Homebrew formula, both repackaging the release archive |
 | `scripts/set_version.py` | `set_version.py 0.2.0` sets every package version; `--check` compares them |
@@ -274,6 +275,85 @@ trusted publishers, the `homebrew-tap` deploy key (`HOMEBREW_TAP_DEPLOY_KEY`),
 the `ANACONDA_API_TOKEN` secret and the GitHub environments `crates-io`, `npm`
 and `pypi` exist; the first crates.io and npm versions must be published by
 hand. Remove the jobs for channels you do not publish to.
+
+## Endpoint round trips
+
+`tests/endpoints/run.py` writes records through a faucet sink and reads them
+back through a faucet source, using the `mqb` CLI and whichever plugin it
+finds (or `--plugin <path>`). It compiles nothing and needs only Python 3.11.
+Brokers are throwaway Docker containers on random ports; without Docker those
+cases are skipped (`--strict` makes a skip fail).
+
+```sh
+python3 tests/endpoints/run.py              # everything runnable here
+python3 tests/endpoints/run.py sqlite kafka # cases whose name matches
+python3 tests/endpoints/run.py --list
+```
+
+The cases are in `tests/endpoints/cases.toml`; its header lists the keys.
+Besides plain round trips they check the plugin's own options: the bookmark
+in `state_path`, `quality` sending quarantined records to a `dlq` middleware,
+`masking`, and `flush: batch`. A source without a sink (`rest`, `graphql`,
+`xml`) reads from a small HTTP server the runner starts. `--rmi` removes the
+broker images the run pulled once it is done.
+
+CI runs the main connectors (files, HTTP, `postgres`, `redis`, `kafka`, `nats`,
+`rabbitmq`, `mongodb`, `s3`, `azure-blob`, `gcs`, `sqs`, `dynamodb`, `clickhouse`, `elasticsearch` and the
+plugin options) on every push, against
+the latest released `mqb` and the plugin built from the tree.
+
+### Tested endpoints
+
+Run on 2026-10-26 with `mqb` 1.2.0 and the Homebrew plugin 0.1.1 on macOS
+arm64. Every case wrote 10 records with a non-ASCII field and read each back
+exactly once. Connectors not listed have not been run.
+
+| Connector | Sink | Source | Against | Notes |
+| --- | :---: | :---: | --- | --- |
+| `sqlite` | ✓ | ✓ | local file | JSON column; also `flush: batch`, `page_size: 3` |
+| `duckdb` | ✓ | ✓ | local file | `auto_map` |
+| `csv` | ✓ | ✓ | local file | values come back as strings |
+| `jsonl` | ✓ | – | local file | read back through `file` |
+| `file` | ✓ | ✓ | local file | `csv`, `parquet` and `json_lines` |
+| `parquet` | ✓ | ✓ | local file | `local_path` |
+| `delta` | ✓ | ✓ | local table | |
+| `http` | ✓ | – | runner's server, `webhook` | `batch_mode: Array` and one request per record |
+| `rest` | – | ✓ | runner's server | also incremental with `state_path`, see below |
+| `graphql` | – | ✓ | runner's server | `auth: { type: none }` is required |
+| `xml` | – | ✓ | runner's server | `method` and `auth` are required |
+| `webhook` | – | ✓ | `http` sink | |
+| `postgres` | ✓ | ✓ | `postgres:16-alpine` | JSONB column and `auto_map` |
+| `postgres-cdc` | – | ✓ | `postgres:16-alpine` | publication created beforehand; `status_update_interval` < `idle_timeout` |
+| `mysql-cdc` | – | ✓ | `mysql:8.4` | `binlog_row_metadata=FULL` on the server; `start_position: earliest` |
+| `mongodb-cdc` | – | ✓ | `mongo:7` replica set | collection scope, source started first |
+| `mysql` | ✓ | ✓ | `mysql:8.4` | JSON column |
+| `mongodb` | ✓ | ✓ | `mongo:7` | |
+| `redis` | ✓ | ✓ | `redis:7-alpine` | `List` and `Stream` |
+| `nats` | ✓ | ✓ | `nats:2.10-alpine` | core NATS, source subscribed first; JetStream with a stream and durable consumer created beforehand |
+| `rabbitmq` | ✓ | ✓ | `rabbitmq:4.1-alpine` | source declares and binds the queue (`bindings`) |
+| `kafka` | ✓ | ✓ | Redpanda v24.3.7 | `auto_offset_reset: earliest` |
+| `s3` | ✓ | ✓ | S3Mock 3.12.0 | |
+| `azure-blob` | ✓ | ✓ | Azurite 3.35.0 | `use_emulator` with `AZURITE_BLOB_STORAGE_URL`; container created beforehand |
+| `sqs` | ✓ | ✓ | ElasticMQ 1.7.1 | `endpoint_url`, static `access_key` credentials |
+| `dynamodb` | ✓ | ✓ | DynamoDB Local 3.3.2 | scan; table created beforehand |
+| `gcs` | ✓ | ✓ | fake-gcs-server 1.56.1 | `storage_host`, `auth: { type: anonymous }` |
+| `clickhouse` | ✓ | ✓ | ClickHouse 26.8 | `create_table` |
+| `elasticsearch` | ✓ | ✓ | Elasticsearch 8.19 | `id_field`; the source needs `query` although its doc names a default |
+| `sftp` | ✓ | ✓ | `atmoz/sftp:alpine` | password auth, `strict` host key |
+
+| Plugin option | Checked |
+| --- | --- |
+| `state_path` | a second run of an incremental `rest` source starts at the bookmark; faucet's filter is inclusive, so the last record comes again |
+| `quality` | records failing a `compare` check are quarantined and reach the route's `dlq` middleware; the others reach the sink |
+| `contract` | with `on_breach: quarantine`, records breaching a field rule reach the `dlq` middleware; the others reach the sink |
+| `idle_timeout_ms` | 7000 over a `nats` source with `idle_timeout_secs: 4` still reads every record (it must be the longer wait, see GAPS.md #1) |
+| `masking` | a `hash` rule rewrites the field before the sink |
+| `flush: batch` | the sink is flushed before every ack |
+| `exactly_once` | writing the same file twice (native `file` source with `source_metadata: true`) leaves 10 rows; without it, 20 |
+
+Not covered yet: the warehouse connectors (Snowflake, BigQuery, Redshift,
+Databricks), `mssql` and its CDC, `kinesis`, `pubsub`, `spanner`, `iceberg`,
+`grpc`, `websocket` and `singer`.
 
 ## Testing against an unreleased mq-bridge
 

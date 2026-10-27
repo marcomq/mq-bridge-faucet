@@ -49,6 +49,27 @@ jobs:
       - name: Endpoint behaviour, linked and plugin-loaded
         run: cargo test
 
+      - name: Build the plugin
+        run: cargo build --lib
+
+      # The latest released mqb, so a new host release that breaks the plugin fails here.
+      - name: Install mqb
+        run: |
+          mkdir -p "$RUNNER_TEMP/mqb"
+          curl -fsSL "https://github.com/marcomq/mq-bridge/releases/latest/download/mq-bridge-cli-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP/mqb"
+          dirname "$(find "$RUNNER_TEMP/mqb" -name mqb -type f | head -n 1)" >> "$GITHUB_PATH"
+
+      # The main connectors through the released mqb; tests/endpoints/cases.toml has the rest.
+      - name: Endpoint round trips
+        run: |
+          mqb --version
+          python3 tests/endpoints/run.py --strict --plugin "$PWD/target/debug/libmq_bridge_faucet.so" \
+            sqlite csv jsonl_file parquet http_rest webhook rest graphql xml \
+            rest_resume quality_dlq contract masking flush_batch exactly_once \
+            postgres redis kafka nats rabbitmq mongodb s3 azure_blob sqs dynamodb \
+            gcs clickhouse elasticsearch
+
   # Release packages build with `full`; this catches a broken feature set
   # before a tag does.
   full-features:
