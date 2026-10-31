@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mq-bridge-faucet"
-version = "0.1.2"
+version = "0.2.0"
 description = "faucet-stream connectors as an mq-bridge endpoint"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
