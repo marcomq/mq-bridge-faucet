@@ -1,6 +1,6 @@
 # mq-bridge-faucet
 
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream)'s sources and
+[faucet-stream](https://github.com/faucet-hq/faucet-stream)'s sources and
 sinks as one [mq-bridge](https://github.com/marcomq/mq-bridge) endpoint, `faucet`.
 It adds the connectors mq-bridge has no endpoint for (REST and GraphQL APIs,
 Snowflake, BigQuery, Iceberg, Delta, Singer taps and more) to any mq-bridge
@@ -106,9 +106,9 @@ mqb copy --drain 'faucet+postgres://?config={"connection_url":"postgres://localh
 
 ## Connectors
 
-The default build compiles faucet-cli's `source` and `sink` feature groups, so
-the connectors available are whatever the resolved faucet-cli version puts in
-those groups (`cargo tree -p faucet-cli` shows the version). Each connector's
+The default build compiles faucet-registry's `source` and `sink` feature groups, so
+the connectors available are whatever the resolved faucet-registry version puts in
+those groups (`cargo tree -p faucet-registry` shows the version). Each connector's
 `config:` fields are in faucet's
 [connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html),
 which documents the latest faucet release.
@@ -257,7 +257,7 @@ name faucet's own features:
 
 ```sh
 cargo build --release --no-default-features \
-  --features plugin,faucet-cli/source-rest,faucet-cli/sink-snowflake
+  --features plugin,faucet-registry/source-rest,faucet-registry/sink-snowflake
 ```
 
 A connector that is not compiled in is reported as an invalid configuration,

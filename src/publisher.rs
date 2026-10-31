@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use faucet_cli::registry;
+use faucet_registry as registry;
 use faucet_core::{format_token, parse_token, FaucetError, Sink};
 use mq_bridge::errors::{InvalidConfig, PublisherError};
 use mq_bridge::support::source_ranges::{SourcePartition, SourcePosition};

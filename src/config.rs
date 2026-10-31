@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
-use faucet_cli::auth_catalog::{build_auth_catalog, AuthCatalog};
-use faucet_cli::registry;
+use faucet_registry::auth_catalog::{build_auth_catalog, AuthCatalog};
+use faucet_registry as registry;
 use faucet_core::contract::ContractSpec;
 use faucet_core::masking::MaskingSpec;
 use faucet_core::quality::QualitySpec;

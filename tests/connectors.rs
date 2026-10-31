@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, Once};
 
-use faucet_cli::registry::PluginRegistry;
+use faucet_registry::PluginRegistry;
 use faucet_core::{async_trait, FaucetError, Sink, Source, Value};
 use mq_bridge::errors::{ConsumerError, PublisherError};
 use mq_bridge::traits::{CustomEndpointFactory, MessageDisposition};

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use faucet_cli::registry;
+use faucet_registry as registry;
 use faucet_core::state::validate_state_key;
 use faucet_core::{FaucetError, FileStateStore, Source, StateStore, StreamPage};
 use futures::StreamExt;
