@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, Once};
 
-use faucet_registry::PluginRegistry;
 use faucet_core::{async_trait, FaucetError, Sink, Source, Value};
+use faucet_registry::PluginRegistry;
 use mq_bridge::errors::{ConsumerError, PublisherError};
 use mq_bridge::traits::{CustomEndpointFactory, MessageDisposition};
 use mq_bridge::{CanonicalMessage, SentBatch};

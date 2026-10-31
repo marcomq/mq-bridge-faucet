@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use faucet_registry as registry;
 use faucet_core::{format_token, parse_token, FaucetError, Sink};
+use faucet_registry as registry;
 use mq_bridge::errors::{InvalidConfig, PublisherError};
 use mq_bridge::support::source_ranges::{SourcePartition, SourcePosition};
 use mq_bridge::traits::{disconnect_outcome, BoxFuture, DisconnectOutcome, MessagePublisher};
@@ -57,9 +57,14 @@ pub(crate) async fn create(
     }
     let auth = config.auth_catalog()?;
     let sink: Arc<dyn Sink> = Arc::from(
-        registry::build_sink(kind, config.config.clone(), &auth)
-            .await
-            .with_context(|| format!("failed to create the faucet `{kind}` sink"))?,
+        registry::build_sink_with(
+            kind,
+            config.config.clone(),
+            &auth,
+            &registry::BuildPolicy::trusted(),
+        )
+        .await
+        .with_context(|| format!("failed to create the faucet `{kind}` sink"))?,
     );
     let token_scope = if config.exactly_once {
         if sink.is_overwrite() {
