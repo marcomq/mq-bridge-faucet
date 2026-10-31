@@ -144,7 +144,7 @@ jobs:
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
 
       - name: Build the test
-        run: cargo test --features faucet-cli/kafka-schema-registry --test kafka_schema_registry --no-run
+        run: cargo test --features faucet-registry/kafka-schema-registry --test kafka_schema_registry --no-run
 
       - name: Wait for the schema registry
         run: |
@@ -152,7 +152,7 @@ jobs:
           docker logs redpanda; exit 1
 
       - name: Avro round trip through the registry
-        run: cargo test --features faucet-cli/kafka-schema-registry --test kafka_schema_registry -- --ignored
+        run: cargo test --features faucet-registry/kafka-schema-registry --test kafka_schema_registry -- --ignored
 
   node-package:
     name: Node package smoke test
