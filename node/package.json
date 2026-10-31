@@ -1,6 +1,6 @@
 {
   "name": "mq-bridge-faucet",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "faucet-stream connectors as an mq-bridge endpoint, shipped as a native plugin",
   "license": "MIT OR Apache-2.0",
   "main": "index.js",

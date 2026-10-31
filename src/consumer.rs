@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use faucet_cli::registry;
 use faucet_core::state::validate_state_key;
 use faucet_core::{FaucetError, FileStateStore, Source, StateStore, StreamPage};
+use faucet_registry as registry;
 use futures::StreamExt;
 use mq_bridge::errors::{ConsumerError, InvalidConfig};
 use mq_bridge::traits::{BatchCommitFunc, MessageConsumer, MessageDisposition};
@@ -55,9 +55,15 @@ pub(crate) async fn create(
     registry::validate_source_config(kind, route_name, config.config.clone()).map_err(invalid)?;
     check_idle_timeout(&config)?;
     let auth = config.auth_catalog()?;
-    let source = registry::build_source(kind, config.config.clone(), &auth, None)
-        .await
-        .with_context(|| format!("failed to create the faucet `{kind}` source"))?;
+    let source = registry::build_source_with(
+        kind,
+        config.config.clone(),
+        &auth,
+        None,
+        &registry::BuildPolicy::trusted(),
+    )
+    .await
+    .with_context(|| format!("failed to create the faucet `{kind}` source"))?;
 
     let checkpoint = match &config.state_path {
         Some(path) => Some(Arc::new(

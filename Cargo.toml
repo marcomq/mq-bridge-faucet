@@ -1,8 +1,8 @@
 [package]
 name = "mq-bridge-faucet"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.96"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "faucet-stream connectors as an mq-bridge endpoint"
 repository = "https://github.com/marcomq/mq-bridge-faucet"
@@ -25,8 +25,8 @@ crate-type = ["rlib", "cdylib"]
 anyhow = "1"
 async-trait = "0.1"
 mq-bridge = { version = ">=1.1, <2", default-features = false }
-# The by-name connector registry lives in faucet's CLI crate, not in `faucet-stream`.
-faucet-cli = { version = "1.15", default-features = false }
+# The by-name connector registry, semver-checked (faucet-hq/faucet-stream#995).
+faucet-registry = { version = "1.0", default-features = false }
 faucet-core = { version = "1.14.1", features = ["masking", "quality", "contract"] }
 futures = "0.3"
 # Derives the configuration schema from the config struct, so the two cannot drift.
@@ -48,41 +48,41 @@ tokio = { version = "1.34", features = ["rt-multi-thread", "macros"] }
 default = ["plugin", "connectors"]
 plugin = ["mq-bridge/plugin-sdk"]
 # Every faucet source and sink. Without it, pick connectors one by one, e.g.
-# `--no-default-features --features plugin,faucet-cli/source-rest`.
+# `--no-default-features --features plugin,faucet-registry/source-rest`.
 connectors = [
-    "faucet-cli/source",
-    "faucet-cli/sink",
-    "faucet-cli/compression",
-    "faucet-cli/file-format-csv",
-    "faucet-cli/file-format-parquet",
-    "faucet-cli/google-sa",
+    "faucet-registry/source",
+    "faucet-registry/sink",
+    "faucet-registry/compression",
+    "faucet-registry/file-format-csv",
+    "faucet-registry/file-format-parquet",
+    "faucet-registry/google-sa",
 ]
 # Endpoint parity with faucet's prebuilt `full` binaries, minus its CLI and
 # server features. Release packages build with this; local builds stay slim.
 full = [
     "connectors",
-    "faucet-cli/kafka-schema-registry",
-    "faucet-cli/source-oracle",
-    "faucet-cli/source-oracle-cdc",
-    "faucet-cli/sink-oracle",
-    "faucet-cli/delta-s3",
-    "faucet-cli/delta-azure",
-    "faucet-cli/delta-gcs",
-    "faucet-cli/source-iceberg-glue",
-    "faucet-cli/source-iceberg-hms",
-    "faucet-cli/source-iceberg-sql",
-    "faucet-cli/source-rest-excel",
-    "faucet-cli/source-xml-excel",
-    "faucet-cli/sink-clickhouse-staging",
-    "faucet-cli/sink-mssql-staging",
-    "faucet-cli/sink-databricks-staging",
-    "faucet-cli/file-formats",
-    "faucet-cli/arrow",
-    "faucet-cli/mtls",
-    "faucet-cli/rabbitmq-tls",
-    "faucet-cli/oauth1",
-    "faucet-cli/encryption",
-    "faucet-cli/quality-jsonschema",
+    "faucet-registry/kafka-schema-registry",
+    "faucet-registry/source-oracle",
+    "faucet-registry/source-oracle-cdc",
+    "faucet-registry/sink-oracle",
+    "faucet-registry/delta-s3",
+    "faucet-registry/delta-azure",
+    "faucet-registry/delta-gcs",
+    "faucet-registry/source-iceberg-glue",
+    "faucet-registry/source-iceberg-hms",
+    "faucet-registry/source-iceberg-sql",
+    "faucet-registry/source-rest-excel",
+    "faucet-registry/source-xml-excel",
+    "faucet-registry/sink-clickhouse-staging",
+    "faucet-registry/sink-mssql-staging",
+    "faucet-registry/sink-databricks-staging",
+    "faucet-registry/file-formats",
+    "faucet-registry/arrow",
+    "faucet-registry/mtls",
+    "faucet-registry/rabbitmq-tls",
+    "faucet-registry/oauth1",
+    "faucet-registry/encryption",
+    "faucet-core/quality-jsonschema",
 ]
 
 [profile.release]
