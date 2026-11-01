@@ -156,15 +156,13 @@ jobs:
         working-directory: node
         run: npx mq-bridge-package-plugin --root .. --package node
 
-      # The packager rebuilds the library itself. On Linux it is built for size
-      # to stay under PyPI's 100 MB limit; the standalone archive (brew, conda,
-      # npm) keeps the -O3 build staged in node/prebuilds above.
+      # The packager rebuilds the library itself. It is built for size to stay
+      # under PyPI's 100 MB limit; the standalone archive (brew, conda, npm)
+      # keeps the -O3 build staged in node/prebuilds above.
       - name: Build Python wheel
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
-          fi
+          export CARGO_PROFILE_RELEASE_OPT_LEVEL=s
           python -m mq_bridge.plugin_packaging --package python/mq_bridge_faucet --out python/dist
 
       - name: Retag macOS wheel
