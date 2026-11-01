@@ -1,4 +1,4 @@
-//! [faucet-stream](https://github.com/PawanSikawat/faucet-stream) connectors as
+//! [faucet-stream](https://github.com/faucet-hq/faucet-stream) connectors as
 //! an input/output endpoint extension for `mq-bridge`.
 //!
 //! One endpoint, `faucet`, wraps any faucet source or sink: `connector` names

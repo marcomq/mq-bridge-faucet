@@ -319,14 +319,14 @@ class Case:
                 timeout=self.spec.get("timeout", 60),
             ).returncode  # fmt: skip
 
-    def setup(self) -> str | None:
-        for command in substitute(self.spec.get("setup", []), self.values):
+    def setup(self, key: str = "setup") -> str | None:
+        for command in substitute(self.spec.get(key, []), self.values):
             command = [str(arg) for arg in command]
             if self.spec.get("setup_in_broker") and self.broker and self.broker.container:
                 command = ["docker", "exec", self.broker.container, *command]
             done = subprocess.run(command, capture_output=True, text=True, env=self.env, timeout=60)
             if done.returncode:
-                return f"setup {command[0]} exited {done.returncode}\n{done.stderr.strip()[-800:]}"
+                return f"{key} {command[0]} exited {done.returncode}\n{done.stderr.strip()[-800:]}"
         return None
 
     def write(self) -> str | None:
@@ -359,7 +359,7 @@ class Case:
         elif self.spec.get("order") == "input_first":
             error = self.concurrently(received)
         else:
-            error = self.write() or self.read(received, "source.log")
+            error = self.write() or self.setup("before_read") or self.read(received, "source.log")
         if error:
             return False, error
 
