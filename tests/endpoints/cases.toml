@@ -22,7 +22,8 @@
 #
 # Case keys: sink, source, broker, count (10), timeout (60 per mqb run),
 # vars, env, setup (commands run first; inside the broker container with
-# setup_in_broker = true), order = "input_first" (the source runs while the
+# setup_in_broker = true), before_read (commands run between write and
+# read, same form as setup), order = "input_first" (the source runs while the
 # sink writes, for sources that only see new data), settle (2, seconds before
 # writing), xfail = "why".
 # Checks: expect_ids (default 1..count), dlq_ids (ids that must land in
@@ -557,11 +558,12 @@ config = { url = "http://127.0.0.1:$PORT", user = "test", password = "test", tab
 connector = "clickhouse"
 config = { url = "http://127.0.0.1:$PORT", user = "test", password = "test", query = "SELECT * FROM t$ID" }
 
-# The sink does not refresh; a short explicit refresh_interval makes the
-# records searchable before the source reads.
+# The sink does not refresh, so before_read refreshes the index explicitly;
+# a 200ms refresh_interval alone was flaky on slow CI runners.
 [cases.elasticsearch]
 broker = "elasticsearch"
 setup = [["sh", "-c", "for i in $(seq 60); do curl -fsS -X PUT http://127.0.0.1:$PORT/i$ID -H 'Content-Type: application/json' -d '{\"settings\":{\"index.refresh_interval\":\"200ms\"}}' && exit 0; sleep 1; done; exit 1"]]
+before_read = [["curl", "-fsS", "-X", "POST", "http://127.0.0.1:$PORT/i$ID/_refresh"]]
 
 [cases.elasticsearch.sink]
 connector = "elasticsearch"
