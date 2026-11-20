@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, Once};
 
-use faucet_core::{async_trait, FaucetError, Sink, Source, Value};
+use faucet_core::{FaucetError, Sink, Source, Value, async_trait};
 use faucet_registry::PluginRegistry;
 use mq_bridge::errors::{ConsumerError, PublisherError};
 use mq_bridge::traits::{CustomEndpointFactory, MessageDisposition};
@@ -470,9 +470,11 @@ async fn rows_the_sink_did_not_write_go_to_the_error_handler() {
     let SentBatch::Partial { failed, .. } = publisher.send_batch(batch).await.expect("send") else {
         panic!("the sink lost a row");
     };
-    assert!(failed
-        .iter()
-        .all(|(_, error)| matches!(error, PublisherError::NonRetryable(_))));
+    assert!(
+        failed
+            .iter()
+            .all(|(_, error)| matches!(error, PublisherError::NonRetryable(_)))
+    );
 }
 
 #[tokio::test]

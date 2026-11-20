@@ -3,11 +3,11 @@
 //! plugin library. Identical results mean the ABI round trip kept the
 //! endpoint's behaviour, and that the Python and npm packages get the same one.
 
+use mq_bridge::SentBatch;
 use mq_bridge::errors::{ConsumerError, InvalidConfig};
 use mq_bridge::plugin::load_endpoint_plugin;
 use mq_bridge::plugin::test_support::build_plugin_cdylib;
 use mq_bridge::traits::{CustomEndpointFactory, MessageDisposition};
-use mq_bridge::SentBatch;
 use mq_bridge_faucet::FaucetFactory;
 use serde_json::json;
 

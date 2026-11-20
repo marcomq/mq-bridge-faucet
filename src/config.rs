@@ -7,7 +7,7 @@ use faucet_core::masking::MaskingSpec;
 use faucet_core::quality::QualitySpec;
 use faucet_core::write_mode::WriteSpec;
 use faucet_registry as registry;
-use faucet_registry::auth_catalog::{build_auth_catalog, AuthCatalog};
+use faucet_registry::auth_catalog::{AuthCatalog, build_auth_catalog};
 use mq_bridge::errors::InvalidConfig;
 use schemars::JsonSchema;
 use serde::Deserialize;

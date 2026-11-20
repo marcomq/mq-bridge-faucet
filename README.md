@@ -147,9 +147,28 @@ connectors this build has.
 
 - A record is one message with the record as its JSON payload. On the output
   side a payload that is not JSON fails that message as non-retryable.
+  A record's message id is derived from its content, so a redelivered record
+  keeps its id and `deduplication` recognises it; identical records share an id.
 - A source's bookmark is stored when the batch holding the last record of its
   page is committed without a nack, so a crash replays at most that page
-  (at-least-once). The file is the one faucet's own file state store writes.
+  (at-least-once). After a nack no bookmark is stored for the rest of the run,
+  so a restart replays from the last stored one, acknowledged records included.
+  `kafka` is finer: a nack only holds back its own partition at the nacked
+  offset, so a restart replays that partition from there, as native Kafka does.
+  Without `state_path` every start reads from the beginning (or what the
+  connector's own start setting says). The file is the one faucet's own file
+  state store writes.
+- A source error in the data or the configuration (a record that cannot be
+  decoded, a JSON, transform, quality or contract failure) stops the route,
+  since a reconnect would read the same record again; any other source error
+  reconnects. To read past undecodable records, set `on_decode_error: skip` or
+  a `value_format` that fits the topic in the source's `config`.
+- `page_size` is a request; some connectors page by their own setting:
+  `kafka` uses `batch_size` in its `config` (default 1000) and releases a page
+  only when it is full or `idle_timeout` passes.
+- The `kafka` source does not resume from its consumer group's offsets, only
+  from `state_path`. Each record is `{topic, partition, offset, key, value}`
+  with the payload under `value`.
 - The output receives batches in source order at any `concurrency`, as in faucet.
   Above 1, mq-bridge still reads ahead and prepares and commits batches in
   parallel, which overlaps reading with writing.
