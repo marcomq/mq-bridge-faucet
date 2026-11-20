@@ -24,7 +24,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-mq-bridge = { version = ">=1.1, <2", default-features = false }
+mq-bridge = { version = ">=1.6, <2", default-features = false }
 # The by-name connector registry, semver-checked (faucet-hq/faucet-stream#995).
 faucet-registry = { version = "1.0", default-features = false }
 faucet-core = { version = "1.14.1", features = ["masking", "quality", "contract"] }
@@ -36,7 +36,7 @@ serde_json = "1"
 tokio = { version = "1.34", features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
-mq-bridge = { version = ">=1.1, <2", default-features = false, features = ["plugin-sdk", "test-utils"] }
+mq-bridge = { version = ">=1.6, <2", default-features = false, features = ["plugin-sdk", "test-utils"] }
 tempfile = "3"
 tokio = { version = "1.34", features = ["rt-multi-thread", "macros"] }
 

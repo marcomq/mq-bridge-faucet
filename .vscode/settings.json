@@ -1,0 +1,5 @@
+{
+  "rust-analyzer.cargo.noDefaultFeatures": true,
+  "rust-analyzer.cargo.features": ["plugin"],
+  "rust-analyzer.cargo.targetDir": true
+}

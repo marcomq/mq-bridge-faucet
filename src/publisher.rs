@@ -9,7 +9,9 @@ use faucet_core::{format_token, parse_token, FaucetError, Sink};
 use faucet_registry as registry;
 use mq_bridge::errors::{InvalidConfig, PublisherError};
 use mq_bridge::support::source_ranges::{SourcePartition, SourcePosition};
-use mq_bridge::traits::{disconnect_outcome, BoxFuture, DisconnectOutcome, MessagePublisher};
+use mq_bridge::traits::{
+    disconnect_outcome, BoxFuture, DisconnectOutcome, EndpointStatus, MessagePublisher,
+};
 use mq_bridge::{CanonicalMessage, SentBatch};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -25,6 +27,7 @@ const EO_WITH_QUARANTINE: &str = "exactly_once cannot quarantine single records:
      set the quality `on_failure` and the contract `on_breach` to `abort`";
 
 struct FaucetPublisher {
+    connector: String,
     sink: Arc<dyn Sink>,
     flush: FlushMode,
     /// Set with `flush: periodic`: the route commits a batch only after a flush.
@@ -93,6 +96,7 @@ pub(crate) async fn create(
         spawn_periodic_flush(Arc::downgrade(&sink), interval, flush_failure.clone());
     }
     Ok(Box::new(FaucetPublisher {
+        connector: kind.to_owned(),
         sink,
         flush: config.flush,
         flush_interval,
@@ -162,6 +166,26 @@ impl MessagePublisher for FaucetPublisher {
             ));
         }
         self.sink.flush().await.map_err(anyhow::Error::new)
+    }
+
+    /// Unhealthy while a failed periodic flush waits to be reported.
+    async fn status(&self) -> EndpointStatus {
+        let failure = self.flush_failure.lock().expect("flush failure lock");
+        let error = failure.flush.clone().or_else(|| failure.send.clone());
+        let mut details = serde_json::Map::new();
+        if let Ok(marks) = self.watermarks.try_lock() {
+            let gaps: usize = marks.gaps.values().map(BTreeSet::len).sum();
+            if gaps > 0 {
+                details.insert("exactly_once_gaps".into(), gaps.into());
+            }
+        }
+        EndpointStatus {
+            healthy: error.is_none(),
+            target: self.connector.clone(),
+            error,
+            details: Value::Object(details),
+            ..Default::default()
+        }
     }
 
     fn deferred_commit_interval(&self) -> Option<Duration> {
