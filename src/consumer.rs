@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use faucet_core::state::validate_state_key;
 use faucet_core::{FaucetError, FileStateStore, Source, StateStore, StreamPage};
@@ -17,7 +17,7 @@ use mq_bridge::{CanonicalMessage, ReceivedBatch};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
-use crate::config::{invalid, unknown_connector, FaucetConfig};
+use crate::config::{FaucetConfig, invalid, unknown_connector};
 
 type PageResult = Result<StreamPage, FaucetError>;
 
@@ -269,25 +269,29 @@ impl FaucetConsumer {
 
 /// Errors in the data or the configuration: a reconnect reads the same record
 /// and fails again, so the route must stop instead of looping. Other `Source`
-/// errors reconnect: connectors report lost connections that way too. kafka
-/// reports a record it cannot decode as `Source("kafka json decode: …")`.
+/// errors reconnect: connectors report lost connections that way too.
 fn is_permanent(error: &FaucetError) -> bool {
-    matches!(
-        error,
-        FaucetError::Source(message) if message.contains(" decode: ")
-    ) || matches!(
-        error,
-        FaucetError::Json(_)
-            | FaucetError::JsonPath(_)
-            | FaucetError::Url(_)
-            | FaucetError::Transform(_)
-            | FaucetError::Config(_)
-            | FaucetError::QualityFailure { .. }
-            | FaucetError::SchemaDrift { .. }
-            | FaucetError::PolicyViolation { .. }
-            | FaucetError::ProfileDrift { .. }
-            | FaucetError::ContractViolation { .. }
-    )
+    matches!(error, FaucetError::Source(message) if is_decode_failure(message))
+        || matches!(
+            error,
+            FaucetError::Json(_)
+                | FaucetError::JsonPath(_)
+                | FaucetError::Url(_)
+                | FaucetError::Transform(_)
+                | FaucetError::Config(_)
+                | FaucetError::QualityFailure { .. }
+                | FaucetError::SchemaDrift { .. }
+                | FaucetError::PolicyViolation { .. }
+                | FaucetError::ProfileDrift { .. }
+                | FaucetError::ContractViolation { .. }
+        )
+}
+
+/// faucet-core has no decode variant: connectors report a record they cannot
+/// decode as `Source("<connector> <format> decode: <cause>")`, e.g. kafka's
+/// `kafka json decode: …` or the schema registry's `avro decode: …`.
+fn is_decode_failure(message: &str) -> bool {
+    message.contains(" decode: ")
 }
 
 fn source_error(permanent: bool, error: anyhow::Error) -> ConsumerError {
@@ -500,6 +504,18 @@ mod tests {
         assert!(is_permanent(&FaucetError::Source(
             "kafka json decode: expected value at line 1 column 1".into()
         )));
+        for upstream in [
+            "kafka json decode: expected value",
+            "kafka raw_string decode: invalid utf-8",
+            "avro decode: unexpected end",
+            "protobuf decode: buffer underflow",
+            "json-schema decode: invalid type",
+        ] {
+            assert!(
+                is_permanent(&FaucetError::Source(upstream.into())),
+                "{upstream}"
+            );
+        }
         assert!(matches!(
             source_error(true, anyhow!("x")),
             ConsumerError::Permanent(_)

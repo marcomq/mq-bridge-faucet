@@ -3,21 +3,21 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
-use faucet_core::{format_token, parse_token, FaucetError, Sink};
+use faucet_core::{FaucetError, Sink, format_token, parse_token};
 use faucet_registry as registry;
 use mq_bridge::errors::{InvalidConfig, PublisherError};
 use mq_bridge::support::source_ranges::{SourcePartition, SourcePosition};
 use mq_bridge::traits::{
-    disconnect_outcome, BoxFuture, DisconnectOutcome, EndpointStatus, MessagePublisher,
+    BoxFuture, DisconnectOutcome, EndpointStatus, MessagePublisher, disconnect_outcome,
 };
 use mq_bridge::{CanonicalMessage, SentBatch};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::checks::Checks;
-use crate::config::{invalid, unknown_connector, FaucetConfig, FlushMode};
+use crate::config::{FaucetConfig, FlushMode, invalid, unknown_connector};
 
 const EO_WITH_OVERWRITE: &str =
     "exactly_once skips records an earlier run committed, so it cannot overwrite";

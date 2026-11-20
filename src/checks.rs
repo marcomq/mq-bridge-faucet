@@ -1,11 +1,11 @@
-use faucet_core::contract::{apply_contract, CompiledContract};
-use faucet_core::masking::{apply_masking, CompiledMasking};
-use faucet_core::quality::{apply_quality, CompiledQuality};
 use faucet_core::FaucetError;
+use faucet_core::contract::{CompiledContract, apply_contract};
+use faucet_core::masking::{CompiledMasking, apply_masking};
+use faucet_core::quality::{CompiledQuality, apply_quality};
 use mq_bridge::errors::InvalidConfig;
 use serde_json::Value;
 
-use crate::config::{invalid, FaucetConfig};
+use crate::config::{FaucetConfig, invalid};
 
 /// faucet's per-page passes, run on each batch in faucet's order: masking, quality, contract.
 pub(crate) struct Checks {
